@@ -1,9 +1,8 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File},
     io::{self, Error, Read, Seek, Write, SeekFrom},
 };
-
 struct KeyValue {
     key: Vec<u8>,
     value: Vec<u8>,
@@ -35,6 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sst_storage = SStStorage {
         index: BTreeMap::new(),
     };
+
+    if let Ok(index_file) = File::open("bitcask/index/index.bin") {
+        sst_storage.index = bincode::deserialize_from(index_file)?;
+    }
+
     loop {
         println!("Please enter your option to proceed. Press 0 to Quit, 1 to Insert, and 2 to Read a Key");
         let mut option = String::new();
@@ -55,7 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Although, we can calculate offset's on the fly. However, later when we would
                 // have a large no of records, this file will help us not include tombstone entries
                 // into our in-memory KV pairs.
-                save_index();
+                save_index(&sst_storage)?;
+                break;
             }
             1 => {
                 println!("Insert key!");
@@ -123,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    fn save_index() -> Result<(), Box<dyn std::error::Error>> {
+    fn save_index(sst_storage: &SStStorage) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all("bitcask/index")?;
         let name = "bitcask/index/index.bin";
         let mut file = match fs::OpenOptions::new()
@@ -135,6 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(file) => file,
             Err(err) => return Err(err.into()),
         };
+        let _ = bincode::serialize_into(&mut file, &sst_storage.index);
         Ok(())
     }
+
+    Ok(())
 }

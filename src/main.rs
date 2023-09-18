@@ -1,7 +1,8 @@
+use rand::Rng;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Error, Read, Seek, SeekFrom, Write},
+    io::{self, Error, Read, Seek, SeekFrom, Write}, time::{Duration, Instant},
 };
 struct KeyValue {
     key: Vec<u8>,
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(index_file) = File::open("bitcask/index/index.bin") {
         let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> = bincode::deserialize_from(&index_file)?;
         for (key, value) in as_is_db {
-            if value.2 == false {
+            if !value.2 {
                 sst_storage.index.insert(key, value);
             }
         }
@@ -139,7 +140,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sst_storage.index.remove(key.as_bytes());
                 }
             }
-            5_u32..=u32::MAX => todo!(),
+            5 => {
+                let mut rng = rand::thread_rng(); // Initialize the random number generator
+                let start_write = Instant::now();
+                let mut total_write_time = Duration::new(0, 0);
+                for _ in 0..1000 {
+                    let key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
+                    let value = (3 * key[0] as u64).to_string().as_bytes().to_vec();
+                    let _ = write(&mut file, &mut sst_storage, KeyValue { key, value }, false);
+                }
+                let write_time = start_write.elapsed();
+                total_write_time += write_time;
+                println!("Write time: {:?}", write_time);
+            }
+            6 => {
+                // Reading random keys and displaying their values
+                let mut rng = rand::thread_rng();
+                let mut total_read_time = Duration::new(0, 0);
+                let start_read = Instant::now();
+                for _ in 0..1000 {
+                    let random_key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
+                    if let Some(value) = read(&mut file, &mut sst_storage, random_key.clone())? {
+                        println!(
+                            "Random key: {:?}, Value: {:?}",
+                            String::from_utf8_lossy(&random_key),
+                            String::from_utf8_lossy(&value)
+                        );
+                    } else {
+                        println!(
+                            "Random key not found: {:?}",
+                            String::from_utf8_lossy(&random_key)
+                        );
+                    }
+                }
+                let read_time = start_read.elapsed();
+                total_read_time += read_time;
+                println!("Read time: {:?}", read_time);
+            }
+            7_u32..=u32::MAX => todo!(),
         }
     }
 
@@ -149,18 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_value: KeyValue,
         mark_as_deleted: bool,
     ) -> Result<(), Error> {
-        let current_offset = file_handler.seek(SeekFrom::End(0))?;
-        println!(
-            "Reading: offset={:?} to the end of the file",
-            current_offset
-        );
         let _ = file_handler.write_all(&key_value.key);
         let offset = file_handler.seek(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
-        println!(
-            "Reading: offset before writing value to the file={:?} to the end of the file",
-            offset
-        );
         let _ = file_handler.write_all(&key_value.value);
         let length = key_value.value.len() as u64;
         sst_storage.insert_key(key_value.key, (offset, length, mark_as_deleted));
@@ -173,16 +202,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         key: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, Error> {
         if let Some((value_offset, length, _)) = sst_storage.index.get(&key) {
-            println!(
-                "Reading: key={:?} offset={:?} length={:?}",
-                key, value_offset, length
-            );
-            let file_length = file_handler.metadata()?.len();
-            println!("Read: {:?}", file_length);
             let mut buffer = vec![0; *length as usize];
             file_handler.seek(io::SeekFrom::Start(*value_offset))?;
             file_handler.read_exact(&mut buffer)?;
-            println!("Read: {:?}", buffer);
             Ok(Some(buffer))
         } else {
             Ok(None)

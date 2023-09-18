@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Error, Read, Seek, Write, SeekFrom},
+    io::{self, Error, Read, Seek, SeekFrom, Write},
 };
 struct KeyValue {
     key: Vec<u8>,
@@ -9,11 +9,11 @@ struct KeyValue {
 }
 
 struct SStStorage {
-    index: BTreeMap<Vec<u8>, (u64, u64)>,
+    index: BTreeMap<Vec<u8>, (u64, u64, bool)>,
 }
 
 impl SStStorage {
-    fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64)) {
+    fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool)) {
         self.index.insert(key, value);
     }
 }
@@ -36,9 +36,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Ok(index_file) = File::open("bitcask/index/index.bin") {
-        sst_storage.index = bincode::deserialize_from(index_file)?;
+        let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> = bincode::deserialize_from(&index_file)?;
+        for (key, value) in as_is_db {
+            if value.2 == false {
+                sst_storage.index.insert(key, value);
+            }
+        }
     }
-
+    println!("Completed the loading of index into memory.....");
     loop {
         println!("Please enter your option to proceed. Press 0 to Quit, 1 to Insert, and 2 to Read a Key");
         let mut option = String::new();
@@ -54,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match option {
             0 => {
-                // On quit we would want to save current Key's and offset mapping from BTreeMap 
+                // On quit we would want to save current Key's and offset mapping from BTreeMap
                 // to a file. So that on next start we could read offset's from this file.
                 // Although, we can calculate offset's on the fly. However, later when we would
                 // have a large no of records, this file will help us not include tombstone entries
@@ -76,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         key: key.trim().as_bytes().to_vec(),
                         value: value.trim().as_bytes().to_vec(),
                     },
+                    false,
                 );
             }
             2 => {
@@ -88,7 +94,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Value: {:?}", String::from_utf8_lossy(&value));
                 }
             }
-            3_u32..=u32::MAX => todo!(),
+            3 => {
+                println!("Update an existing key");
+                let mut key = String::new();
+                let _ = io::stdin().read_line(&mut key);
+                println!("Enter the new value for the key");
+                let mut new_value = String::new();
+                let _ = io::stdin().read_line(&mut new_value);
+
+                // Key has to be searched in hashmap
+                if let Some((_, _, _)) = sst_storage.index.get(&key.trim().as_bytes().to_vec()) {
+                    println!("Reading: key={:?} ", key);
+                    let _ = write(
+                        &mut file,
+                        &mut sst_storage,
+                        KeyValue {
+                            key: key.trim().as_bytes().to_vec(),
+                            value: new_value.trim().as_bytes().to_vec(),
+                        },
+                        false,
+                    );
+                }
+            }
+            4 => {
+                let mut key = String::new();
+                let _ = io::stdin().read_line(&mut key);
+
+                // Remove the newline character from the input
+                let key = key.trim();
+
+                if let Some((value, _, _)) = sst_storage.index.get(key.as_bytes()) {
+                    // Mark the key as deleted by deleting it from BTreeMap and also adding
+                    // a value in append log, so that it can be deleted from next reload
+                    let current_value = value.to_be_bytes().to_vec();
+                    let _ = write(
+                        &mut file,
+                        &mut sst_storage,
+                        KeyValue {
+                            key: key.as_bytes().to_vec(),
+                            value: current_value,
+                        },
+                        true,
+                    );
+                    sst_storage.index.remove(key.as_bytes());
+                }
+            }
+            5_u32..=u32::MAX => todo!(),
         }
     }
 
@@ -96,16 +147,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_handler: &mut fs::File,
         sst_storage: &mut SStStorage,
         key_value: KeyValue,
+        mark_as_deleted: bool,
     ) -> Result<(), Error> {
         let current_offset = file_handler.seek(SeekFrom::End(0))?;
-        println!("Reading: offset={:?} to the end of the file", current_offset);
+        println!(
+            "Reading: offset={:?} to the end of the file",
+            current_offset
+        );
         let _ = file_handler.write_all(&key_value.key);
         let offset = file_handler.seek(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
-        println!("Reading: offset before writing value to the file={:?} to the end of the file", offset);
+        println!(
+            "Reading: offset before writing value to the file={:?} to the end of the file",
+            offset
+        );
         let _ = file_handler.write_all(&key_value.value);
         let length = key_value.value.len() as u64;
-        sst_storage.insert_key(key_value.key, (offset, length));
+        sst_storage.insert_key(key_value.key, (offset, length, mark_as_deleted));
         Ok(())
     }
 
@@ -114,8 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sst_storage: &mut SStStorage,
         key: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, Error> {
-        if let Some((value_offset, length)) = sst_storage.index.get(&key) {
-            println!("Reading: key={:?} offset={:?} length={:?}", key, value_offset, length);
+        if let Some((value_offset, length, _)) = sst_storage.index.get(&key) {
+            println!(
+                "Reading: key={:?} offset={:?} length={:?}",
+                key, value_offset, length
+            );
             let file_length = file_handler.metadata()?.len();
             println!("Read: {:?}", file_length);
             let mut buffer = vec![0; *length as usize];

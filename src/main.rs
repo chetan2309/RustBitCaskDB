@@ -11,11 +11,49 @@ struct KeyValue {
 
 struct SStStorage {
     index: BTreeMap<Vec<u8>, (u64, u64, bool)>,
+    file: File
 }
 
 impl SStStorage {
+
+    fn new(file: File) -> Self {
+        SStStorage { 
+            index: BTreeMap::new(), 
+            file 
+        }
+    }
+
+
     fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool)) {
         self.index.insert(key, value);
+    }
+
+    fn write(
+        &mut self,
+        key_value: KeyValue,
+        mark_as_deleted: bool,
+    ) -> Result<(), Error> {
+        let _ = self.file.write_all(&key_value.key);
+        let offset = self.file.seek(SeekFrom::End(0))?;
+        // let value_offset = file_handler.metadata()?.len();
+        let _ = self.file.write_all(&key_value.value);
+        let length = key_value.value.len() as u64;
+        self.insert_key(key_value.key, (offset, length, mark_as_deleted));
+        Ok(())
+    }
+
+    fn read(
+        &mut self,
+        key: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        if let Some((value_offset, length, _)) = self.index.get(&key) {
+            let mut buffer = vec![0; *length as usize];
+            self.file.seek(io::SeekFrom::Start(*value_offset))?;
+            self.file.read_exact(&mut buffer)?;
+            Ok(Some(buffer))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -23,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Hello, welcome to DB created on BitCask paper!...................");
     fs::create_dir_all("bitcask/active")?;
     let name = "bitcask/active/database.txt";
-    let mut file = match fs::OpenOptions::new()
+    let file = match fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -32,9 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(file) => file,
         Err(err) => return Err(err.into()),
     };
-    let mut sst_storage = SStStorage {
-        index: BTreeMap::new(),
-    };
+    let mut sst_storage = SStStorage::new(file);
 
     if let Ok(index_file) = File::open("bitcask/index/index.bin") {
         let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> = bincode::deserialize_from(&index_file)?;
@@ -75,9 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Insert Value!");
                 let mut value = String::new();
                 io::stdin().read_line(&mut value)?;
-                let _ = write(
-                    &mut file,
-                    &mut sst_storage,
+                let _ = &sst_storage.write(
                     KeyValue {
                         key: key.trim().as_bytes().to_vec(),
                         value: value.trim().as_bytes().to_vec(),
@@ -90,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut key = String::new();
                 let _ = io::stdin().read_line(&mut key);
                 if let Some(value) =
-                    read(&mut file, &mut sst_storage, key.trim().as_bytes().to_vec())?
+                    sst_storage.read(key.trim().as_bytes().to_vec())?
                 {
                     println!("Value: {:?}", String::from_utf8_lossy(&value));
                 }
@@ -106,9 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Key has to be searched in hashmap
                 if let Some((_, _, _)) = sst_storage.index.get(&key.trim().as_bytes().to_vec()) {
                     println!("Reading: key={:?} ", key);
-                    let _ = write(
-                        &mut file,
-                        &mut sst_storage,
+                    let _ = sst_storage.write(
                         KeyValue {
                             key: key.trim().as_bytes().to_vec(),
                             value: new_value.trim().as_bytes().to_vec(),
@@ -128,9 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Mark the key as deleted by deleting it from BTreeMap and also adding
                     // a value in append log, so that it can be deleted from next reload
                     let current_value = value.to_be_bytes().to_vec();
-                    let _ = write(
-                        &mut file,
-                        &mut sst_storage,
+                    let _ = sst_storage.write(
                         KeyValue {
                             key: key.as_bytes().to_vec(),
                             value: current_value,
@@ -147,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for _ in 0..1000 {
                     let key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
                     let value = (3 * key[0] as u64).to_string().as_bytes().to_vec();
-                    let _ = write(&mut file, &mut sst_storage, KeyValue { key, value }, false);
+                    let _ = sst_storage.write(KeyValue { key, value }, false);
                 }
                 let write_time = start_write.elapsed();
                 total_write_time += write_time;
@@ -160,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let start_read = Instant::now();
                 for _ in 0..1000 {
                     let random_key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
-                    if let Some(value) = read(&mut file, &mut sst_storage, random_key.clone())? {
+                    if let Some(value) = sst_storage.read(random_key.clone())? {
                         println!(
                             "Random key: {:?}, Value: {:?}",
                             String::from_utf8_lossy(&random_key),
@@ -178,36 +208,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Read time: {:?}", read_time);
             }
             7_u32..=u32::MAX => todo!(),
-        }
-    }
-
-    fn write(
-        file_handler: &mut fs::File,
-        sst_storage: &mut SStStorage,
-        key_value: KeyValue,
-        mark_as_deleted: bool,
-    ) -> Result<(), Error> {
-        let _ = file_handler.write_all(&key_value.key);
-        let offset = file_handler.seek(SeekFrom::End(0))?;
-        // let value_offset = file_handler.metadata()?.len();
-        let _ = file_handler.write_all(&key_value.value);
-        let length = key_value.value.len() as u64;
-        sst_storage.insert_key(key_value.key, (offset, length, mark_as_deleted));
-        Ok(())
-    }
-
-    fn read(
-        file_handler: &mut fs::File,
-        sst_storage: &mut SStStorage,
-        key: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        if let Some((value_offset, length, _)) = sst_storage.index.get(&key) {
-            let mut buffer = vec![0; *length as usize];
-            file_handler.seek(io::SeekFrom::Start(*value_offset))?;
-            file_handler.read_exact(&mut buffer)?;
-            Ok(Some(buffer))
-        } else {
-            Ok(None)
         }
     }
 

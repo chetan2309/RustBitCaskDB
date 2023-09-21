@@ -23,7 +23,6 @@ impl SStStorage {
         }
     }
 
-
     fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool)) {
         self.index.insert(key, value);
     }
@@ -54,6 +53,44 @@ impl SStStorage {
         } else {
             Ok(None)
         }
+    }
+
+    fn update(
+        &mut self,
+        key: Vec<u8>,
+        updated_value: Vec<u8>,
+        mark_as_deleted: bool
+    ) -> Result<(), Error> {
+        println!("Reading: key before if else={:?} ", key);
+        // Key has to be searched in hashmap
+        if let Some((_, _, _)) = self.index.get(&key) {
+            println!("Reading: key={:?} ", key);
+            let _ = self.write(
+                KeyValue {
+                    key,
+                    value: updated_value,
+                },
+                mark_as_deleted,
+            );
+        }
+        Ok(())
+    }
+
+    fn delete_key(&mut self, key: Vec<u8>) -> Result<(), Error> {
+        if let Some((value, _, _)) = self.index.get(&key) {
+            // Mark the key as deleted by deleting it from BTreeMap and also adding
+            // a value in append log, so that it can be deleted from next reload
+            let current_value = value.to_be_bytes().to_vec();
+            let _ = self.write(
+                KeyValue {
+                    key: key.to_vec(),
+                    value: current_value,
+                },
+                true,
+            );
+            self.index.remove(&key);
+        }
+        Ok(())
     }
 }
 
@@ -136,39 +173,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Enter the new value for the key");
                 let mut new_value = String::new();
                 let _ = io::stdin().read_line(&mut new_value);
-
-                // Key has to be searched in hashmap
-                if let Some((_, _, _)) = sst_storage.index.get(&key.trim().as_bytes().to_vec()) {
-                    println!("Reading: key={:?} ", key);
-                    let _ = sst_storage.write(
-                        KeyValue {
-                            key: key.trim().as_bytes().to_vec(),
-                            value: new_value.trim().as_bytes().to_vec(),
-                        },
-                        false,
-                    );
-                }
+                let _ = &sst_storage.update(
+                    key.trim().as_bytes().to_vec(), 
+                    new_value.trim().as_bytes().to_vec(), 
+                    false);
             }
             4 => {
+                println!("Remove an existing key. Please enter the key");
                 let mut key = String::new();
                 let _ = io::stdin().read_line(&mut key);
 
                 // Remove the newline character from the input
                 let key = key.trim();
-
-                if let Some((value, _, _)) = sst_storage.index.get(key.as_bytes()) {
-                    // Mark the key as deleted by deleting it from BTreeMap and also adding
-                    // a value in append log, so that it can be deleted from next reload
-                    let current_value = value.to_be_bytes().to_vec();
-                    let _ = sst_storage.write(
-                        KeyValue {
-                            key: key.as_bytes().to_vec(),
-                            value: current_value,
-                        },
-                        true,
-                    );
-                    sst_storage.index.remove(key.as_bytes());
-                }
+                let _ = sst_storage.delete_key(key.as_bytes().to_vec());
             }
             5 => {
                 let mut rng = rand::thread_rng(); // Initialize the random number generator

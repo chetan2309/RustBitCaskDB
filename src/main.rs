@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, Error, Read, Seek, SeekFrom, Write}, time::{Duration, Instant},
 };
+mod main_test;
 struct KeyValue {
     key: Vec<u8>,
     value: Vec<u8>,

@@ -2,7 +2,8 @@ use rand::Rng;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Error, Read, Seek, SeekFrom, Write}, time::{Duration, Instant},
+    io::{self, Error, Read, Seek, SeekFrom, Write},
+    time::{Duration, Instant},
 };
 mod main_test;
 struct KeyValue {
@@ -12,15 +13,14 @@ struct KeyValue {
 
 struct SStStorage {
     index: BTreeMap<Vec<u8>, (u64, u64, bool)>,
-    file: File
+    file: File,
 }
 
 impl SStStorage {
-
     fn new(file: File) -> Self {
-        SStStorage { 
-            index: BTreeMap::new(), 
-            file 
+        SStStorage {
+            index: BTreeMap::new(),
+            file,
         }
     }
 
@@ -28,11 +28,7 @@ impl SStStorage {
         self.index.insert(key, value);
     }
 
-    fn write(
-        &mut self,
-        key_value: KeyValue,
-        mark_as_deleted: bool,
-    ) -> Result<(), Error> {
+    fn write(&mut self, key_value: KeyValue, mark_as_deleted: bool) -> Result<(), Error> {
         let _ = self.file.write_all(&key_value.key);
         let offset = self.file.seek(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
@@ -42,10 +38,7 @@ impl SStStorage {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        key: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, Error> {
+    fn read(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
         if let Some((value_offset, length, _)) = self.index.get(&key) {
             let mut buffer = vec![0; *length as usize];
             self.file.seek(io::SeekFrom::Start(*value_offset))?;
@@ -60,7 +53,7 @@ impl SStStorage {
         &mut self,
         key: Vec<u8>,
         updated_value: Vec<u8>,
-        mark_as_deleted: bool
+        mark_as_deleted: bool,
     ) -> Result<(), Error> {
         println!("Reading: key before if else={:?} ", key);
         // Key has to be searched in hashmap
@@ -106,7 +99,7 @@ impl SStStorage {
             Ok(file) => file,
             Err(err) => return Err(err.into()),
         };
-        let _ = bincode::serialize_into(&mut file, &self.index)?;
+        bincode::serialize_into(&mut file, &self.index)?;
         Ok(())
     }
 
@@ -140,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sst_storage = SStStorage::new(file);
     // Load data from filesystem into BTree Map which acts as an in-memory.
     sst_storage.load_db_from_disk()?;
-    
+
     println!("Completed the loading of index into memory.....");
     loop {
         println!("Please enter your option to proceed. Press 0 to Quit, 1 to Insert, and 2 to Read a Key");
@@ -184,9 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Read key!");
                 let mut key = String::new();
                 let _ = io::stdin().read_line(&mut key);
-                if let Some(value) =
-                    sst_storage.read(key.trim().as_bytes().to_vec())?
-                {
+                if let Some(value) = sst_storage.read(key.trim().as_bytes().to_vec())? {
                     println!("Value: {:?}", String::from_utf8_lossy(&value));
                 }
             }
@@ -198,9 +189,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut new_value = String::new();
                 let _ = io::stdin().read_line(&mut new_value);
                 let _ = &sst_storage.update(
-                    key.trim().as_bytes().to_vec(), 
-                    new_value.trim().as_bytes().to_vec(), 
-                    false);
+                    key.trim().as_bytes().to_vec(),
+                    new_value.trim().as_bytes().to_vec(),
+                    false,
+                );
             }
             4 => {
                 println!("Remove an existing key. Please enter the key");

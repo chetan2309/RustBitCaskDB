@@ -1,8 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use std::{fs::{File, OpenOptions, self}, io::{Seek, Read, SeekFrom}};
+    use std::{
+        fs::{self, File, OpenOptions},
+        io::{Read, Seek, SeekFrom},
+    };
 
-    use crate::{SStStorage, KeyValue};
+    use crate::{KeyValue, SStStorage};
     #[test]
     fn test_write() {
         // Create a temporary file for testing
@@ -38,10 +41,14 @@ mod tests {
         let mut file_content = Vec::new();
         let mut file = File::open(temp_file_path).expect("Failed to open temp file");
         file.seek(SeekFrom::Start(0)).expect("Failed to seek file");
-        file.read_to_end(&mut file_content).expect("Failed to read file");
+        file.read_to_end(&mut file_content)
+            .expect("Failed to read file");
 
         // Validate that the key and value were written correctly
-        assert_eq!(file_content, [&key_value.key[..], &key_value.value[..]].concat());
+        assert_eq!(
+            file_content,
+            [&key_value.key[..], &key_value.value[..]].concat()
+        );
 
         // Clean up the temporary file
         fs::remove_file(temp_file_path).expect("Failed to remove temp file");

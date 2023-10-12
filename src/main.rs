@@ -93,6 +93,22 @@ impl SStStorage {
         }
         Ok(())
     }
+
+    fn save_index(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        fs::create_dir_all("bitcask/index")?;
+        let name = "bitcask/index/index.bin";
+        let mut file = match fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(name)
+        {
+            Ok(file) => file,
+            Err(err) => return Err(err.into()),
+        };
+        let _ = bincode::serialize_into(&mut file, &self.index)?;
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -139,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Although, we can calculate offset's on the fly. However, later when we would
                 // have a large no of records, this file will help us not include tombstone entries
                 // into our in-memory KV pairs.
-                save_index(&sst_storage)?;
+                sst_storage.save_index()?;
                 break;
             }
             1 => {
@@ -228,22 +244,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             7_u32..=u32::MAX => todo!(),
         }
     }
-
-    fn save_index(sst_storage: &SStStorage) -> Result<(), Box<dyn std::error::Error>> {
-        fs::create_dir_all("bitcask/index")?;
-        let name = "bitcask/index/index.bin";
-        let mut file = match fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(name)
-        {
-            Ok(file) => file,
-            Err(err) => return Err(err.into()),
-        };
-        let _ = bincode::serialize_into(&mut file, &sst_storage.index);
-        Ok(())
-    }
-
     Ok(())
 }

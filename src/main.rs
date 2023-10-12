@@ -109,6 +109,19 @@ impl SStStorage {
         let _ = bincode::serialize_into(&mut file, &self.index)?;
         Ok(())
     }
+
+    fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Ok(index_file) = File::open("bitcask/index/index.bin") {
+            let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> =
+                bincode::deserialize_from(&index_file)?;
+            for (key, value) in as_is_db {
+                if !value.2 {
+                    self.index.insert(key, value);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -125,15 +138,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(err) => return Err(err.into()),
     };
     let mut sst_storage = SStStorage::new(file);
-
-    if let Ok(index_file) = File::open("bitcask/index/index.bin") {
-        let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> = bincode::deserialize_from(&index_file)?;
-        for (key, value) in as_is_db {
-            if !value.2 {
-                sst_storage.index.insert(key, value);
-            }
-        }
-    }
+    // Load data from filesystem into BTree Map which acts as an in-memory.
+    sst_storage.load_db_from_disk()?;
+    
     println!("Completed the loading of index into memory.....");
     loop {
         println!("Please enter your option to proceed. Press 0 to Quit, 1 to Insert, and 2 to Read a Key");

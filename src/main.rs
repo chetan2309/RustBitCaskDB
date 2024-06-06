@@ -1,10 +1,8 @@
 use rand::Rng;
 use std::{
-    collections::BTreeMap,
-    fs::{self, File},
-    io::{self, Error, Read, Seek, SeekFrom, Write},
-    time::{Duration, Instant},
+    collections::BTreeMap, fs::{self, File, OpenOptions}, io::{self, Error, Read, Seek, SeekFrom, Write}, time::{Duration, Instant}
 };
+use chrono::prelude::*;
 mod main_test;
 struct KeyValue {
     key: Vec<u8>,
@@ -12,7 +10,7 @@ struct KeyValue {
 }
 
 struct SStStorage {
-    index: BTreeMap<Vec<u8>, (u64, u64, bool)>,
+    index: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)>,
     file: File,
 }
 
@@ -24,22 +22,22 @@ impl SStStorage {
         }
     }
 
-    fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool)) {
+    fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool, Option<i64>)) {
         self.index.insert(key, value);
     }
 
-    fn write(&mut self, key_value: KeyValue, mark_as_deleted: bool) -> Result<(), Error> {
+    fn write(&mut self, key_value: KeyValue, mark_as_deleted: bool, timestamp: Option<i64>) -> Result<(), Error> {
         let _ = self.file.write_all(&key_value.key);
         let offset = self.file.seek(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
         let _ = self.file.write_all(&key_value.value);
         let length = key_value.value.len() as u64;
-        self.insert_key(key_value.key, (offset, length, mark_as_deleted));
+        self.insert_key(key_value.key, (offset, length, mark_as_deleted, timestamp));
         Ok(())
     }
 
     fn read(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-        if let Some((value_offset, length, _)) = self.index.get(&key) {
+        if let Some((value_offset, length, _, _)) = self.index.get(&key) {
             let mut buffer = vec![0; *length as usize];
             self.file.seek(io::SeekFrom::Start(*value_offset))?;
             self.file.read_exact(&mut buffer)?;
@@ -54,10 +52,11 @@ impl SStStorage {
         key: Vec<u8>,
         updated_value: Vec<u8>,
         mark_as_deleted: bool,
+        timestamp: Option<i64>
     ) -> Result<(), Error> {
         println!("Reading: key before if else={:?} ", key);
         // Key has to be searched in hashmap
-        if let Some((_, _, _)) = self.index.get(&key) {
+        if let Some((_, _, _, _)) = self.index.get(&key) {
             println!("Reading: key={:?} ", key);
             let _ = self.write(
                 KeyValue {
@@ -65,13 +64,14 @@ impl SStStorage {
                     value: updated_value,
                 },
                 mark_as_deleted,
+                timestamp,
             );
         }
         Ok(())
     }
 
     fn delete_key(&mut self, key: Vec<u8>) -> Result<(), Error> {
-        if let Some((value, _, _)) = self.index.get(&key) {
+        if let Some((value, _, _, _)) = self.index.get(&key) {
             // Mark the key as deleted by deleting it from BTreeMap and also adding
             // a value in append log, so that it can be deleted from next reload
             let current_value = value.to_be_bytes().to_vec();
@@ -81,6 +81,7 @@ impl SStStorage {
                     value: current_value,
                 },
                 true,
+                None
             );
             self.index.remove(&key);
         }
@@ -90,11 +91,7 @@ impl SStStorage {
     fn save_index(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all("bitcask/index")?;
         let name = "bitcask/index/index.bin";
-        let mut file = match fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(name)
+        let mut file = match open_file_read_write(&name)
         {
             Ok(file) => file,
             Err(err) => return Err(err.into()),
@@ -104,8 +101,8 @@ impl SStStorage {
     }
 
     fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok(index_file) = File::open("bitcask/index/index.bin") {
-            let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool)> =
+        if let Ok(index_file) = open_file_read_only("bitcask/index/index.bin") {
+            let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)> =
                 bincode::deserialize_from(&index_file)?;
             for (key, value) in as_is_db {
                 if !value.2 {
@@ -115,17 +112,26 @@ impl SStStorage {
         }
         Ok(())
     }
+
+    fn cleanup_expired_keys(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        print!("Performing the clean up process....");
+        let current_time = chrono::Utc::now().timestamp();
+        self.index.retain(|_,(_, _, _, timestamp) | {
+            match timestamp {
+                Some(ts) => *ts > current_time,
+                None => true
+            }
+    });
+    print!("Ended the clean up process....");
+    Ok(())
+}
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Hello, welcome to DB created on BitCask paper!...................");
     fs::create_dir_all("bitcask/active")?;
     let name = "bitcask/active/database.txt";
-    let file = match fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(name)
+    let file = match open_file_read_write(&name)
     {
         Ok(file) => file,
         Err(err) => return Err(err.into()),
@@ -133,6 +139,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sst_storage = SStStorage::new(file);
     // Load data from filesystem into BTree Map which acts as an in-memory.
     sst_storage.load_db_from_disk()?;
+
+    let mut last_cleanup_time = Instant::now();
 
     println!("Completed the loading of index into memory.....");
     loop {
@@ -147,6 +155,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(num) => num,
             Err(_) => continue,
         };
+
+        let time_since_last_cleanup = last_cleanup_time.elapsed();
+        if time_since_last_cleanup >= Duration::from_secs(60) {
+            sst_storage.cleanup_expired_keys()?;
+            last_cleanup_time = Instant::now();
+        }
 
         match option {
             0 => {
@@ -171,6 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         value: value.trim().as_bytes().to_vec(),
                     },
                     false,
+                    Some(generate_timestamp_one_hour_in_future())
                 );
             }
             2 => {
@@ -192,6 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key.trim().as_bytes().to_vec(),
                     new_value.trim().as_bytes().to_vec(),
                     false,
+                    Some(generate_timestamp_one_hour_in_future())
                 );
             }
             4 => {
@@ -210,7 +226,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for _ in 0..1000 {
                     let key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
                     let value = (3 * key[0] as u64).to_string().as_bytes().to_vec();
-                    let _ = sst_storage.write(KeyValue { key, value }, false);
+                    let _ = sst_storage.write(
+                        KeyValue { key, value },
+                         false, 
+                         Some(generate_timestamp_one_hour_in_future())
+                        );
                 }
                 let write_time = start_write.elapsed();
                 total_write_time += write_time;
@@ -244,4 +264,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn generate_timestamp_one_hour_in_future() -> i64 {
+    let current_time = Utc::now();
+    let one_hour_in_future = current_time + chrono::Duration::minutes(2);
+    one_hour_in_future.timestamp()
+}
+
+fn open_file_read_only(path: &str) -> Result<File, Error> {
+    File::open(path)
+}
+
+fn open_file_read_write(path: &str) -> Result<File, Error> {
+    OpenOptions::new().read(true).write(true).create(true).open(path)
 }

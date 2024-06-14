@@ -71,6 +71,7 @@ impl SStStorage {
     }
 
     fn delete_key(&mut self, key: Vec<u8>) -> Result<(), Error> {
+       
         if let Some((value, _, _, _)) = self.index.get(&key) {
             // Mark the key as deleted by deleting it from BTreeMap and also adding
             // a value in append log, so that it can be deleted from next reload
@@ -101,15 +102,12 @@ impl SStStorage {
     }
 
     fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok(index_file) = open_file_read_only("bitcask/index/index.bin") {
-            let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)> =
+        let index_file = open_file_read_only("bitcask/index/index.bin")?;
+        let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)> =
                 bincode::deserialize_from(&index_file)?;
-            for (key, value) in as_is_db {
-                if !value.2 {
-                    self.index.insert(key, value);
-                }
-            }
-        }
+        self.index = as_is_db.into_iter()
+            .filter(|(_, (_, _, deleted, _))| !deleted)
+            .collect();
         Ok(())
     }
 
@@ -121,10 +119,10 @@ impl SStStorage {
                 Some(ts) => *ts > current_time,
                 None => true
             }
-    });
-    print!("Ended the clean up process....");
-    Ok(())
-}
+            });
+        print!("Ended the clean up process....");
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

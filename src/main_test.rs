@@ -34,7 +34,7 @@ mod tests {
                 value: value_clone,
             },
             false,
-            None
+            None,
         );
         assert!(result.is_ok());
 

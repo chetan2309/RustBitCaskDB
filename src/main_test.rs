@@ -5,7 +5,7 @@ mod tests {
         io::{Read, Seek, SeekFrom},
     };
 
-    use crate::{KeyValue, SStStorage};
+    use crate::SStStorage;
     #[test]
     fn test_write() {
         // Create a temporary file for testing
@@ -18,24 +18,15 @@ mod tests {
             .expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
-        let key_value = KeyValue {
-            key: vec![1, 2, 3],
-            value: vec![4, 5, 6],
-        };
+        let key = vec![1, 2, 3];
+        let value = vec![4, 5, 6];
 
         // Clone the key and value before passing to the write method
-        let key_clone = key_value.key.clone();
-        let value_clone = key_value.value.clone();
+        // let key_clone = key_value.key.clone();
+        // let value_clone = key_value.value.clone();
 
         // Call the write method and validate the result
-        let result = sst_storage.write(
-            KeyValue {
-                key: key_clone,
-                value: value_clone,
-            },
-            false,
-            None,
-        );
+        let result = sst_storage.write(&key, &value, false, None);
         assert!(result.is_ok());
 
         // Manually read the content from the temporary file and validate
@@ -46,10 +37,7 @@ mod tests {
             .expect("Failed to read file");
 
         // Validate that the key and value were written correctly
-        assert_eq!(
-            file_content,
-            [&key_value.key[..], &key_value.value[..]].concat()
-        );
+        assert_eq!(file_content, [&key[..], &value[..]].concat());
 
         // Clean up the temporary file
         fs::remove_file(temp_file_path).expect("Failed to remove temp file");

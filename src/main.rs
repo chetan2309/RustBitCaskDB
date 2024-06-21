@@ -7,10 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 mod main_test;
-struct KeyValue {
-    key: Vec<u8>,
-    value: Vec<u8>,
-}
 
 struct SStStorage {
     index: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)>,
@@ -31,21 +27,22 @@ impl SStStorage {
 
     fn write(
         &mut self,
-        key_value: KeyValue,
+        key: &[u8],
+        value: &[u8],
         mark_as_deleted: bool,
         timestamp: Option<i64>,
     ) -> Result<(), Error> {
-        let _ = self.file.write_all(&key_value.key);
+        self.file.write_all(key)?;
         let offset = self.file.seek(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
-        let _ = self.file.write_all(&key_value.value);
-        let length = key_value.value.len() as u64;
-        self.insert_key(key_value.key, (offset, length, mark_as_deleted, timestamp));
+        self.file.write_all(value)?;
+        let length = value.len() as u64;
+        self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
         Ok(())
     }
 
-    fn read(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-        if let Some((value_offset, length, _, _)) = self.index.get(&key) {
+    fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        if let Some((value_offset, length, _, _)) = self.index.get(key) {
             let mut buffer = vec![0; *length as usize];
             self.file.seek(io::SeekFrom::Start(*value_offset))?;
             self.file.read_exact(&mut buffer)?;
@@ -57,41 +54,27 @@ impl SStStorage {
 
     fn update(
         &mut self,
-        key: Vec<u8>,
-        updated_value: Vec<u8>,
+        key: &[u8],
+        updated_value: &[u8],
         mark_as_deleted: bool,
         timestamp: Option<i64>,
     ) -> Result<(), Error> {
         println!("Reading: key before if else={:?} ", key);
         // Key has to be searched in hashmap
-        if let Some((_, _, _, _)) = self.index.get(&key) {
+        if let Some((_, _, _, _)) = self.index.get(key) {
             println!("Reading: key={:?} ", key);
-            let _ = self.write(
-                KeyValue {
-                    key,
-                    value: updated_value,
-                },
-                mark_as_deleted,
-                timestamp,
-            );
+            let _ = self.write(key, updated_value, mark_as_deleted, timestamp);
         }
         Ok(())
     }
 
-    fn delete_key(&mut self, key: Vec<u8>) -> Result<(), Error> {
-        if let Some((value, _, _, _)) = self.index.get(&key) {
+    fn delete_key(&mut self, key: &[u8]) -> Result<(), Error> {
+        if let Some((value, _, _, _)) = self.index.get(key) {
             // Mark the key as deleted by deleting it from BTreeMap and also adding
             // a value in append log, so that it can be deleted from next reload
-            let current_value = value.to_be_bytes().to_vec();
-            let _ = self.write(
-                KeyValue {
-                    key: key.to_vec(),
-                    value: current_value,
-                },
-                true,
-                None,
-            );
-            self.index.remove(&key);
+            let current_value = value.to_be_bytes();
+            let _ = self.write(key, &current_value, true, None);
+            self.index.remove(key);
         }
         Ok(())
     }
@@ -108,13 +91,26 @@ impl SStStorage {
     }
 
     fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let index_file = open_file_read_only("bitcask/index/index.bin")?;
-        let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)> =
-            bincode::deserialize_from(&index_file)?;
-        self.index = as_is_db
-            .into_iter()
-            .filter(|(_, (_, _, deleted, _))| !deleted)
-            .collect();
+        let index_path = "bitcask/index/index.bin";
+        if fs::metadata(index_path).is_ok() {
+            let index_file = open_file_read_only(index_path)?;
+            match bincode::deserialize_from(&index_file) {
+                Ok(as_is_db) => {
+                    let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)> = as_is_db;
+                    self.index = as_is_db
+                        .into_iter()
+                        .filter(|(_, (_, _, deleted, _))| !deleted)
+                        .collect();
+                }
+                Err(e) => {
+                    println!("Warning: Failed to load index file. Error: {}. Starting with an empty index.", e);
+                    self.index = BTreeMap::new();
+                }
+            }
+        } else {
+            println!("Warning: Index file not found. Starting with an empty index.");
+            self.index = BTreeMap::new();
+        }
         Ok(())
     }
 
@@ -183,10 +179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut value = String::new();
                 io::stdin().read_line(&mut value)?;
                 let _ = &sst_storage.write(
-                    KeyValue {
-                        key: key.trim().as_bytes().to_vec(),
-                        value: value.trim().as_bytes().to_vec(),
-                    },
+                    key.trim().as_bytes(),
+                    value.trim().as_bytes(),
                     false,
                     Some(generate_timestamp_one_hour_in_future()),
                 );
@@ -195,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Read key!");
                 let mut key = String::new();
                 let _ = io::stdin().read_line(&mut key);
-                if let Some(value) = sst_storage.read(key.trim().as_bytes().to_vec())? {
+                if let Some(value) = sst_storage.read(key.trim().as_bytes())? {
                     println!("Value: {:?}", String::from_utf8_lossy(&value));
                 }
             }
@@ -207,8 +201,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut new_value = String::new();
                 let _ = io::stdin().read_line(&mut new_value);
                 let _ = &sst_storage.update(
-                    key.trim().as_bytes().to_vec(),
-                    new_value.trim().as_bytes().to_vec(),
+                    key.trim().as_bytes(),
+                    new_value.trim().as_bytes(),
                     false,
                     Some(generate_timestamp_one_hour_in_future()),
                 );
@@ -220,17 +214,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Remove the newline character from the input
                 let key = key.trim();
-                let _ = sst_storage.delete_key(key.as_bytes().to_vec());
+                let _ = sst_storage.delete_key(key.as_bytes());
             }
             5 => {
                 let mut rng = rand::thread_rng(); // Initialize the random number generator
                 let start_write = Instant::now();
                 let mut total_write_time = Duration::new(0, 0);
                 for _ in 0..1000 {
-                    let key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
-                    let value = (3 * key[0] as u64).to_string().as_bytes().to_vec();
+                    let key_string = rng.gen_range(1..=1000).to_string().to_string();
+                    let key = key_string.as_bytes();
+                    let value_string = (3 * key[0] as u64).to_string();
+                    let value = value_string.as_bytes();
                     let _ = sst_storage.write(
-                        KeyValue { key, value },
+                        key,
+                        value,
                         false,
                         Some(generate_timestamp_one_hour_in_future()),
                     );
@@ -245,8 +242,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut total_read_time = Duration::new(0, 0);
                 let start_read = Instant::now();
                 for _ in 0..1000 {
-                    let random_key = rng.gen_range(1..=1000).to_string().as_bytes().to_vec();
-                    if let Some(value) = sst_storage.read(random_key.clone())? {
+                    let random_key_string = rng.gen_range(1..=1000).to_string();
+                    let random_key = random_key_string.as_bytes();
+                    if let Some(value) = sst_storage.read(random_key)? {
                         println!(
                             "Random key: {:?}, Value: {:?}",
                             String::from_utf8_lossy(&random_key),

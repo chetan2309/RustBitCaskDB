@@ -8,13 +8,33 @@ use std::{
 };
 mod main_test;
 
-struct SStStorage {
+struct SStStorage<T: FileIO> {
     index: BTreeMap<Vec<u8>, (u64, u64, bool, Option<i64>)>,
-    file: File,
+    file: T,
 }
 
-impl SStStorage {
-    fn new(file: File) -> Self {
+trait FileIO {
+    fn write(&mut self, buf: &[u8]) -> io::Result<()>;
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<()>;
+    fn seek_from(&mut self, pos: SeekFrom) -> io::Result<u64>;
+}
+
+impl FileIO for File {
+    fn write(&mut self, buf: &[u8]) -> io::Result<()> {
+        File::write_all(self, buf)
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        File::read_exact(self, buf)
+    }
+
+    fn seek_from(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        File::seek(self, pos)
+    }
+}
+
+impl<T: FileIO> SStStorage<T> {
+    fn new(file: T) -> Self {
         SStStorage {
             index: BTreeMap::new(),
             file,
@@ -32,10 +52,10 @@ impl SStStorage {
         mark_as_deleted: bool,
         timestamp: Option<i64>,
     ) -> Result<(), Error> {
-        self.file.write_all(key)?;
-        let offset = self.file.seek(SeekFrom::End(0))?;
+        self.file.write(key)?;
+        let offset = self.file.seek_from(SeekFrom::End(0))?;
         // let value_offset = file_handler.metadata()?.len();
-        self.file.write_all(value)?;
+        self.file.write(value)?;
         let length = value.len() as u64;
         self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
         Ok(())
@@ -44,8 +64,8 @@ impl SStStorage {
     fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         if let Some((value_offset, length, _, _)) = self.index.get(key) {
             let mut buffer = vec![0; *length as usize];
-            self.file.seek(io::SeekFrom::Start(*value_offset))?;
-            self.file.read_exact(&mut buffer)?;
+            self.file.seek_from(io::SeekFrom::Start(*value_offset))?;
+            self.file.read(&mut buffer)?;
             Ok(Some(buffer))
         } else {
             Ok(None)

@@ -1,11 +1,15 @@
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use std::{
-        fs::{self},
-        io::{Read, Seek, SeekFrom},
+        fs,
+        ops::Add,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::{open_file_read_only, open_file_read_write, SStStorage};
+    use dance_of_bytes::read_from_file;
+
+    use crate::{open_file_read_write, SStStorage};
     #[test]
     fn test_write() {
         // Create a temporary file for testing
@@ -15,22 +19,45 @@ mod tests {
 
         let key = vec![1, 2, 3];
         let value = vec![4, 5, 6];
+        let timestamp = Some(10);
+        let (lower_bound, upper_bound) = generate_timestamp_range(10);
 
+        // Debug print
+        println!("Generated timestamp: {:?}", timestamp);
         // Call the write method and validate the result
-        let result = sst_storage.write(&key, &value, false, None);
+        let result = sst_storage.write(&key, &value, false, timestamp);
         assert!(result.is_ok());
 
-        // Manually read the content from the temporary file and validate
-        let mut file_content = Vec::new();
-        let mut file = open_file_read_only(temp_file_path).expect("Failed to open temp file");
-        file.seek(SeekFrom::Start(0)).expect("Failed to seek file");
-        file.read_to_end(&mut file_content)
-            .expect("Failed to read file");
+        let records = read_from_file(&temp_file_path).unwrap();
 
         // Validate that the key and value were written correctly
-        assert_eq!(file_content, [&key[..], &value[..]].concat());
+        // println!("Value of records[0]..key and &[key..] are {:?} {:?}", records[0].key, &key[..]);
+        assert_eq!(records[0].key, &key[..]);
+        assert_eq!(records[0].value, &value[..]);
+        // Debug print
+        let read_timestamp = records[0].timestamp.unwrap();
+        // println!("Read timestamp: {}", read_timestamp);
+        // println!("Expected range: {} to {}", lower_bound, upper_bound);
+        assert!(
+            read_timestamp >= lower_bound && read_timestamp <= upper_bound,
+            "Timestamp {} is not within expected range {} to {}",
+            read_timestamp,
+            lower_bound,
+            upper_bound
+        );
 
         // Clean up the temporary file
         fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+    }
+
+    const SECONDS_IN_MINS: u64 = 60;
+
+    fn generate_timestamp_range(minutes: u64) -> (u64, u64) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let lower_bound = now.as_secs();
+        let upper_bound = now
+            .add(Duration::from_secs(minutes * SECONDS_IN_MINS))
+            .as_secs();
+        (lower_bound, upper_bound)
     }
 }

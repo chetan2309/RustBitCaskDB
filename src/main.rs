@@ -1,13 +1,13 @@
 use chrono::prelude::*;
+use dance_of_bytes::{self, KeyValue};
 use rand::Rng;
 use rust_bit_cask_db::parse_key_value_from_buffer;
 use std::{
-    collections::BTreeMap, 
-    fs::{self, File, OpenOptions}, 
-    io::{self, Error, Read, Seek, SeekFrom, Write}, 
-    time::{Duration, Instant}
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io::{self, Error, Read, Seek, SeekFrom, Write},
+    time::{Duration, Instant},
 };
-use dance_of_bytes::{self, KeyValue};
 mod main_test;
 
 struct SStStorage<T: FileIO> {
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let initial_offset = file.seek(SeekFrom::End(0))?;
             println!("Initial offset after opening: {}", initial_offset);
             file
-        },
+        }
         Err(err) => return Err(err.into()),
     };
     let mut sst_storage = SStStorage::new(file);

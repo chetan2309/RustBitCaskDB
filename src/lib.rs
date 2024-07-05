@@ -5,7 +5,7 @@ use dance_of_bytes::KeyValue;
 // Improved parse_key_value function
 pub fn parse_key_value_from_buffer(buffer: &[u8]) -> io::Result<KeyValue> {
     let mut cursor = std::io::Cursor::new(buffer);
-    
+
     // Read key length (u8)
     let mut key_len_buf = [0u8; 1];
     cursor.read_exact(&mut key_len_buf)?;

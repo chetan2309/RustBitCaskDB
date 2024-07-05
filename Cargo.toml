@@ -10,3 +10,5 @@ bincode = "1.3.2"
 
 rand = "0.8.5"
 chrono = "0.4.31"
+
+dance_of_bytes = { git = "https://github.com/chetan2309/dance_of_bytes" }

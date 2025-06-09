@@ -1,6 +1,7 @@
 use chrono::prelude::*;
 use dance_of_bytes::{self, KeyValue};
 use rand::Rng;
+use rust_bit_cask_db::parse_key_value_from_reader;
 use rust_bit_cask_db::parse_key_value_from_buffer;
 use std::{
     collections::BTreeMap,
@@ -69,7 +70,10 @@ impl<T: FileIO> SStStorage<T> {
         // let length = value.len() as u64;
         let length = buffer.len() as u64;
         self.file.write(&buffer)?;
-        self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
+        // Only update the in-memory index for new or updated keys, not for deletions.
+        if !mark_as_deleted {
+            self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
+        }
         Ok(())
     }
 
@@ -107,48 +111,71 @@ impl<T: FileIO> SStStorage<T> {
     }
 
     fn delete_key(&mut self, key: &[u8]) -> Result<(), Error> {
-        if let Some((value, _, _, _)) = self.index.get(key) {
-            // Mark the key as deleted by deleting it from BTreeMap and also adding
-            // a value in append log, so that it can be deleted from next reload
-            let current_value = value.to_be_bytes();
-            let _ = self.write(key, &current_value, true, None);
+        // First, check if the key exists in the live index.
+        if self.index.contains_key(key) {
+            // Append a tombstone record to the log. The value for a tombstone is irrelevant,
+            // so we use an empty slice `&[]`. Our modified `write` function will handle this
+            // without adding the key back to the index.
+            self.write(key, &[], true, Some(0))?;
+
+            // Finally, remove the key from the in-memory index to mark it as deleted.
             self.index.remove(key);
         }
         Ok(())
     }
 
-    fn save_index(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        fs::create_dir_all("bitcask/index")?;
-        let name = "bitcask/index/index.bin";
-        let mut file = match open_file_read_write(&name) {
-            Ok(file) => file,
-            Err(err) => return Err(err.into()),
-        };
-        bincode::serialize_into(&mut file, &self.index)?;
-        Ok(())
-    }
 
-    fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let index_path = "bitcask/index/index.bin";
-        if fs::metadata(index_path).is_ok() {
-            let index_file = open_file_read_only(index_path)?;
-            match bincode::deserialize_from(&index_file) {
-                Ok(as_is_db) => {
-                    let as_is_db: BTreeMap<Vec<u8>, (u64, u64, bool, Option<u64>)> = as_is_db;
-                    self.index = as_is_db
-                        .into_iter()
-                        .filter(|(_, (_, _, deleted, _))| !deleted)
-                        .collect();
+    // REPLACE the old load_db_from_disk function with this new one:
+    fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>>
+    where 
+        T: std::io::Read,
+     {
+        // Seek to the beginning of the active database file to read all entries.
+        let mut current_offset = self.file.seek_from(SeekFrom::Start(0))?;
+        let file_size = self.file.seek_from(SeekFrom::End(0))?;
+        self.file.seek_from(SeekFrom::Start(0))?; // Seek back to start for reading.
+
+        self.index.clear(); // Rebuilding from scratch.
+
+        while current_offset < file_size {
+            let record_start_offset = current_offset;
+
+            // The `parse_key_value_from_reader` will read exactly one entry from the file.
+            match parse_key_value_from_reader(&mut self.file) {
+                Ok(kv) => {
+                    let key_len = kv.key.len() as u64;
+                    let value_len = kv.value.len() as u64;
+                    // Calculate record length: 1 (key_len) + 1 (value_len) + key + value + 8 (timestamp) + 1 (tombstone)
+                    let record_len = 2 + key_len + value_len + 8 + 1;
+
+                    if kv.tombstone {
+                        // This is a delete marker. The latest entry for a key wins,
+                        // so if we see a tombstone, we remove it from our index.
+                        self.index.remove(&kv.key);
+                    } else {
+                        // This is a regular entry. Insert or update the index.
+                        self.index.insert(
+                            kv.key,
+                            (record_start_offset, record_len, false, kv.timestamp),
+                        );
+                    }
+                    current_offset += record_len;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    // We've reached the end of the file, which is expected.
+                    break;
                 }
                 Err(e) => {
-                    println!("Warning: Failed to load index file. Error: {}. Starting with an empty index.", e);
-                    self.index = BTreeMap::new();
+                    // An actual error occurred.
+                    eprintln!("Error reading log file during startup: {}", e);
+                    return Err(Box::new(e));
                 }
             }
-        } else {
-            println!("Warning: Index file not found. Starting with an empty index.");
-            self.index = BTreeMap::new();
         }
+
+        // After reading the log, the file cursor must be at the end
+        // so that new writes are appended correctly.
+        self.file.seek_from(SeekFrom::End(0))?;
         Ok(())
     }
 
@@ -206,12 +233,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match option {
             0 => {
-                // On quit we would want to save current Key's and offset mapping from BTreeMap
-                // to a file. So that on next start we could read offset's from this file.
-                // Although, we can calculate offset's on the fly. However, later when we would
-                // have a large no of records, this file will help us not include tombstone entries
-                // into our in-memory KV pairs.
-                sst_storage.save_index()?;
                 break;
             }
             1 => {
@@ -314,10 +335,6 @@ fn generate_timestamp_one_hour_in_future() -> u64 {
     let current_time = Utc::now();
     let one_hour_in_future = current_time + chrono::Duration::minutes(2);
     one_hour_in_future.timestamp() as u64
-}
-
-fn open_file_read_only(path: &str) -> Result<File, Error> {
-    File::open(path)
 }
 
 fn open_file_read_write(path: &str) -> Result<File, Error> {

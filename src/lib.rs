@@ -41,3 +41,40 @@ pub fn parse_key_value_from_buffer(buffer: &[u8]) -> io::Result<KeyValue> {
         tombstone,
     })
 }
+
+pub fn parse_key_value_from_reader<R: Read>(reader: &mut R) -> io::Result<KeyValue> {
+    // Read key length (u8)
+    let mut key_len_buf = [0u8; 1];
+    reader.read_exact(&mut key_len_buf)?;
+    let key_len = key_len_buf[0] as usize;
+
+    // Read value length (u8)
+    let mut value_len_buf = [0u8; 1];
+    reader.read_exact(&mut value_len_buf)?;
+    let value_len = value_len_buf[0] as usize;
+
+    // Read key
+    let mut key = vec![0; key_len];
+    reader.read_exact(&mut key)?;
+
+    // Read value
+    let mut value = vec![0; value_len];
+    reader.read_exact(&mut value)?;
+
+    // Read timestamp
+    let mut timestamp_buffer = [0u8; 8];
+    reader.read_exact(&mut timestamp_buffer)?;
+    let timestamp = Some(u64::from_le_bytes(timestamp_buffer));
+
+    // Read tombstone
+    let mut tombstone_buffer = [0u8; 1];
+    reader.read_exact(&mut tombstone_buffer)?;
+    let tombstone = tombstone_buffer[0] != 0;
+
+    Ok(KeyValue {
+        key,
+        value,
+        timestamp,
+        tombstone,
+    })
+}

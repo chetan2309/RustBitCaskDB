@@ -143,10 +143,8 @@ impl<T: FileIO> SStStorage<T> {
             // The `parse_key_value_from_reader` will read exactly one entry from the file.
             match parse_key_value_from_reader(&mut self.file) {
                 Ok(kv) => {
-                    let key_len = kv.key.len() as u64;
-                    let value_len = kv.value.len() as u64;
-                    // Calculate record length: 1 (key_len) + 1 (value_len) + key + value + 8 (timestamp) + 1 (tombstone)
-                    let record_len = 2 + key_len + value_len + 8 + 1;
+                    let buffer = kv.to_buffer();
+                    let record_len = buffer.len() as u64;
 
                     if kv.tombstone {
                         // This is a delete marker. The latest entry for a key wins,

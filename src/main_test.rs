@@ -13,7 +13,7 @@ mod tests {
     #[test]
     fn test_write() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file.txt";
+        let temp_file_path = "temp_test_file_write.txt";
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_insert_key_and_read_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file.txt";
+        let temp_file_path = "temp_test_file_insert_and_delete.txt";
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn test_insert_key_and_read_non_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file.txt";
+        let temp_file_path = "temp_test_file_insert_delete_non_existing.txt";
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
@@ -83,7 +83,6 @@ mod tests {
         let non_existent_key = b"non_existent_key".to_vec();
         let read_value = sst_storage.read(&non_existent_key ).unwrap();
         assert_eq!(read_value, None);
-        assert_ne!(read_value, Some(value));
 
         // cleanup
         fs::remove_file(temp_file_path).expect("Failed to remove temp file");
@@ -92,7 +91,7 @@ mod tests {
     #[test]
     fn test_update_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file.txt";
+        let temp_file_path = "temp_test_file_update_key.txt";
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
@@ -118,7 +117,7 @@ mod tests {
     #[test]
     fn test_delete_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file.txt";
+        let temp_file_path = "temp_test_file_delete_existing.txt";
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
         let mut sst_storage = SStStorage::new(file);
 
@@ -133,9 +132,7 @@ mod tests {
 
         // Reading the kv pair from the file
         let read_value = sst_storage.read(&key).unwrap();
-        // assert_eq!(read_value, None);
-
-        assert_ne!(read_value, Some(value));
+        assert_eq!(read_value, None);
     }
 
     const SECONDS_IN_MINS: u64 = 60;

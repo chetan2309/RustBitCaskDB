@@ -57,17 +57,8 @@ impl<T: FileIO> SStStorage<T> {
     ) -> Result<(), Error> {
         let kv = KeyValue::new(key, value, timestamp, mark_as_deleted);
 
-        // let key_length = key.len() as u8;
-        // self.file.write(&[key_length])?;
-        // self.file.write(key)?;
         let buffer = kv.to_buffer();
         let offset = self.file.seek_from(SeekFrom::End(0))?;
-        // let value_offset = file_handler.metadata()?.len();
-        print!("The value of offset is {:?}", offset);
-        // let value_length  = value.len() as u8;
-        // self.file.write(&[value_length])?;
-        // self.file.write(value)?;
-        // let length = value.len() as u64;
         let length = buffer.len() as u64;
         self.file.write(&buffer)?;
         // Only update the in-memory index for new or updated keys, not for deletions.

@@ -1,4 +1,4 @@
-use chrono::prelude::*;
+use chrono::{DateTime, Utc};
 use dance_of_bytes::{self, KeyValue};
 use rand::Rng;
 use rust_bit_cask_db::parse_key_value_from_reader;
@@ -115,7 +115,6 @@ impl<T: FileIO> SStStorage<T> {
         Ok(())
     }
 
-
     // REPLACE the old load_db_from_disk function with this new one:
     fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>>
     where 
@@ -179,6 +178,87 @@ impl<T: FileIO> SStStorage<T> {
         print!("Ended the clean up process....");
         Ok(())
     }
+
+    /// Lists all active key-value pairs and their timestamps.
+    fn list_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n--- All Key-Value Pairs ---");
+        if self.index.is_empty() {
+            println!("(No data in the database)");
+            return Ok(());
+        }
+
+        // Collect the keys and timestamps into a temporary vector to avoid borrow checker errors.
+        let items_to_list: Vec<_> = self.index.iter().map(|(key, &(_, _, _, ts))| (key.clone(), ts)).collect();
+
+        println!("---------------------------");
+        // Iterate over the independent vector.
+        for (key, timestamp_opt) in items_to_list {
+            // Get the value for the key.
+            let value = self.read(&key)?.unwrap_or_default();
+            
+            // --- THIS IS THE CORRECTED LOGIC ---
+            let formatted_timestamp = if let Some(ts) = timestamp_opt {
+                print!("Raw date is {}", ts);
+                // Create a timezone-aware DateTime object from the Unix timestamp.
+                // This is safer and part of the core chrono API.
+                if let Some(dt) = DateTime::from_timestamp(ts as i64, 0) {
+                    // Format the DateTime object into a string.
+                    dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                } else {
+                    "Invalid Timestamp".to_string()
+                }
+            } else {
+                "N/A".to_string()
+            };
+
+            println!(
+                "  Key: {:>15} | Value: {:>15} | Timestamp: {}",
+                String::from_utf8_lossy(&key),
+                String::from_utf8_lossy(&value),
+                formatted_timestamp
+            );
+        }
+        println!("---------------------------\n");
+        Ok(())
+    }
+
+    // Test serialization roundtrip
+    fn test_timestamp_serialization(&self, timestamp: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+        println!("=== TIMESTAMP SERIALIZATION TEST ===");
+        println!("Input timestamp: {:?}", timestamp);
+        
+        let test_key = b"test_key";
+        let test_value = b"test_value";
+        
+        // Create KeyValue
+        let kv = KeyValue::new(test_key, test_value, timestamp, false);
+        println!("KeyValue timestamp after creation: {:?}", kv.timestamp);
+        
+        // Serialize to buffer
+        let buffer = kv.to_buffer();
+        println!("Buffer created, length: {}", buffer.len());
+        
+        // Deserialize from buffer
+        match parse_key_value_from_buffer(&buffer) {
+            Ok(parsed_kv) => {
+                println!("Parsed KeyValue timestamp: {:?}", parsed_kv.timestamp);
+                
+                if kv.timestamp == parsed_kv.timestamp {
+                    println!("✅ Serialization roundtrip SUCCESS");
+                } else {
+                    println!("❌ Serialization roundtrip FAILED");
+                    println!("  Original: {:?}", kv.timestamp);
+                    println!("  Parsed:   {:?}", parsed_kv.timestamp);
+                }
+            }
+            Err(e) => {
+                println!("❌ Failed to parse buffer: {}", e);
+            }
+        }
+        println!("=== END TEST ===\n");
+        Ok(())
+    }
+
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -314,7 +394,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 total_read_time += read_time;
                 println!("Read time: {:?}", read_time);
             }
-            7_u32..=u32::MAX => todo!(),
+            7 => {
+                let _ = sst_storage.list_all();
+            }
+            8 => {
+                let _ = test_timestamp_issue();
+            }
+            9_u32..=u32::MAX => todo!(),
         }
     }
     Ok(())
@@ -332,4 +418,22 @@ fn open_file_read_write(path: &str) -> Result<File, Error> {
         .write(true)
         .create(true)
         .open(path)
+}
+
+// Add this to your main function to test
+fn test_timestamp_issue() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Testing timestamp serialization...");
+    
+    // Test with the problematic timestamp
+    let test_timestamp = Some(1749763021u64);
+    
+    let file = std::fs::File::create("test_timestamp.db")?;
+    let storage = SStStorage::new(file);
+    
+    storage.test_timestamp_serialization(test_timestamp)?;
+    
+    // Clean up
+    std::fs::remove_file("test_timestamp.db").ok();
+    
+    Ok(())
 }

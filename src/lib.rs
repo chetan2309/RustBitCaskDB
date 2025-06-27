@@ -34,12 +34,29 @@ pub fn parse_key_value_from_buffer(buffer: &[u8]) -> io::Result<KeyValue> {
     cursor.read_exact(&mut tombstone_buffer)?;
     let tombstone = tombstone_buffer[0] != 0;
 
-    Ok(KeyValue {
+    // Read checksum
+    let mut checksum_buffer = [0u8; 4];
+    cursor.read_exact(&mut checksum_buffer)?;
+    let checksum_from_file = u32::from_le_bytes(checksum_buffer);
+
+    let mut kv = KeyValue {
         key,
         value,
         timestamp,
         tombstone,
-    })
+        checksum: checksum_from_file
+    };
+    // Calculate the checksum
+    let calculated_checksum = kv.calculate_checksum();
+    if calculated_checksum != checksum_from_file {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Checksum mismatch",
+        ));
+    }
+    println!("Calculated checksum {} checksum_from_file {}", calculated_checksum, checksum_from_file);
+    kv.checksum = calculated_checksum;
+    Ok(kv)
 }
 
 pub fn parse_key_value_from_reader<R: Read>(reader: &mut R) -> io::Result<KeyValue> {
@@ -71,10 +88,26 @@ pub fn parse_key_value_from_reader<R: Read>(reader: &mut R) -> io::Result<KeyVal
     reader.read_exact(&mut tombstone_buffer)?;
     let tombstone = tombstone_buffer[0] != 0;
 
-    Ok(KeyValue {
+    // Read checksum
+    let mut checksum_buffer = [0u8; 4];
+    reader.read_exact(&mut checksum_buffer)?;
+    let checksum_from_file = u32::from_le_bytes(checksum_buffer);
+
+    let mut kv = KeyValue {
         key,
         value,
         timestamp,
         tombstone,
-    })
+        checksum: checksum_from_file
+    };
+    // Calculate the checksum
+    let calculated_checksum = kv.calculate_checksum();
+    if calculated_checksum != checksum_from_file {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Checksum mismatch",
+        ));
+    }
+    kv.checksum = calculated_checksum;
+    Ok(kv)
 }

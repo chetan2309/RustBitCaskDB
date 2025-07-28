@@ -63,7 +63,7 @@ impl<T: FileIO> SStStorage<T> {
         self.file.write(&buffer)?;
         // Only update the in-memory index for new or updated keys, not for deletions.
         if !mark_as_deleted {
-            self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
+            self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, kv.timestamp));
         }
         Ok(())
     }
@@ -396,13 +396,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             7 => {
                 let _ = sst_storage.list_all();
             }
-            8 => {
-                let _ = test_timestamp_issue();
-            }
-            9 => {
-                let _ = test_corruption();
-            }
-            10_u32..=u32::MAX => todo!(),
+            _ => todo!(),
         }
     }
     Ok(())
@@ -420,85 +414,4 @@ fn open_file_read_write(path: &str) -> Result<File, Error> {
         .write(true)
         .create(true)
         .open(path)
-}
-
-// Add this to your main function to test
-fn test_timestamp_issue() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Testing timestamp serialization...");
-    
-    // Test with the problematic timestamp
-    let test_timestamp = Some(1749763021u64);
-    
-    let file = std::fs::File::create("test_timestamp.db")?;
-    let storage = SStStorage::new(file);
-    
-    storage.test_timestamp_serialization(test_timestamp)?;
-    
-    // Clean up
-    std::fs::remove_file("test_timestamp.db").ok();
-    
-    Ok(())
-}
-
-// Add this function at the end of src/main.rs
-
-fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
-    let test_file_name = "corruption_test.db";
-    // Start with a clean file for a predictable test
-    if fs::metadata(test_file_name).is_ok() {
-        fs::remove_file(test_file_name)?;
-    }
-
-    // --- Step 1: Write a known record ---
-    {
-        println!("Step 1: Writing a known record to '{}'...", test_file_name);
-        let file = open_file_read_write(test_file_name)?;
-        let mut sst_storage = SStStorage::new(file);
-        let key = b"integrity_check";
-        let value = b"this_data_is_good";
-        sst_storage.write(key, value, false, None)?;
-        println!("Record written successfully.");
-    } // `sst_storage` and `file` are dropped here, closing the file.
-
-    // --- Step 2: Manually corrupt the file ---
-    {
-        println!("Step 2: Corrupting the file by changing one byte...");
-        let mut file_to_corrupt = OpenOptions::new().write(true).open(test_file_name)?;
-
-        // Let's corrupt a byte in the middle of the value "this_data_is_good"
-        // The value starts after:
-        // 1 byte (key_len) + 1 byte (val_len) + 15 bytes (key) = 17 bytes from start
-        // Let's change the 'd' in "good" to 'X'. 'd' is at index 10 of the value.
-        // So, we seek to offset 17 + 10 = 27
-        let corruption_offset = 27;
-        file_to_corrupt.seek(SeekFrom::Start(corruption_offset))?;
-        file_to_corrupt.write_all(&[b'X'])?; // Corrupt 'd' to 'X'
-        println!("File has been corrupted at byte {}!", corruption_offset);
-    }
-
-    // --- Step 3 & 4: Attempt to load the corrupted file and observe ---
-    println!("Step 3: Attempting to load the corrupted database...");
-    let file = open_file_read_write(test_file_name)?;
-    let mut sst_storage = SStStorage::new(file);
-
-    // The load_db_from_disk() function will read all records and verify checksums.
-    // This call is EXPECTED to fail.
-    match sst_storage.load_db_from_disk() {
-        Ok(_) => {
-            eprintln!("❌ TEST FAILED: The program loaded the corrupted data without error.");
-        }
-        Err(e) => {
-            if e.to_string().contains("Checksum mismatch") || e.to_string().contains("invalid data") {
-                println!("✅ TEST PASSED: The program correctly detected data corruption!");
-                println!("   Error message was: '{}'", e);
-            } else {
-                eprintln!("❌ TEST FAILED: The program failed, but not with the expected checksum error.");
-                eprintln!("   Error message was: '{}'", e);
-            }
-        }
-    }
-
-    // Clean up the test file
-    fs::remove_file(test_file_name)?;
-    Ok(())
 }

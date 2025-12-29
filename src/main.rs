@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use dance_of_bytes::{self, KeyValue};
 use rand::Rng;
-use rust_bit_cask_db::parse_key_value_from_reader;
 use rust_bit_cask_db::parse_key_value_from_buffer;
+use rust_bit_cask_db::parse_key_value_from_reader;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -11,8 +11,14 @@ use std::{
 };
 mod main_test;
 
+struct IndexEntry {
+    offset: u64,
+    length: u64,
+    timestamp: Option<u64>,
+}
+
 struct SStStorage<T: FileIO> {
-    index: BTreeMap<Vec<u8>, (u64, u64, bool, Option<u64>)>,
+    index: BTreeMap<Vec<u8>, IndexEntry>,
     file: T,
 }
 
@@ -44,7 +50,7 @@ impl<T: FileIO> SStStorage<T> {
         }
     }
 
-    fn insert_key(&mut self, key: Vec<u8>, value: (u64, u64, bool, Option<u64>)) {
+    fn insert_key(&mut self, key: Vec<u8>, value: IndexEntry) {
         self.index.insert(key, value);
     }
 
@@ -63,25 +69,27 @@ impl<T: FileIO> SStStorage<T> {
         self.file.write(&buffer)?;
         // Only update the in-memory index for new or updated keys, not for deletions.
         if !mark_as_deleted {
-            self.insert_key(key.to_vec(), (offset, length, mark_as_deleted, timestamp));
+            self.insert_key(
+                key.to_vec(),
+                IndexEntry {
+                    offset,
+                    length,
+                    timestamp,
+                },
+            );
         }
         Ok(())
     }
 
     fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        if let Some((value_offset, length, is_deleted, _)) = self.index.get(key) {
-            // print!("Is key deleted  {:?}", is_deleted);
-            if *is_deleted {
-                return Ok(None);
-            }
-            let mut buffer = vec![0; *length as usize];
-            self.file.seek_from(io::SeekFrom::Start(*value_offset))?;
+        if let Some(index_entry) = self.index.get(key) {
+            let mut buffer = vec![0; index_entry.length as usize];
+            self.file
+                .seek_from(io::SeekFrom::Start(index_entry.offset))?;
             self.file.read(&mut buffer)?;
             let kv = parse_key_value_from_buffer(&buffer)?;
-            // print!("Trying to read the key  {:?}", kv.key);
             Ok(Some(kv.value))
         } else {
-            // print!("Nothing Nada...");
             Ok(None)
         }
     }
@@ -90,13 +98,12 @@ impl<T: FileIO> SStStorage<T> {
         &mut self,
         key: &[u8],
         updated_value: &[u8],
-        mark_as_deleted: bool,
         timestamp: Option<u64>,
     ) -> Result<(), Error> {
         // Key has to be searched in hashmap
-        if let Some((_, _, _, _)) = self.index.get(key) {
+        if self.index.contains_key(key) {
             println!("Reading: key={:?} ", key);
-            let _ = self.write(key, updated_value, mark_as_deleted, timestamp);
+            self.write(key, updated_value, false, timestamp)?;
         }
         Ok(())
     }
@@ -116,9 +123,9 @@ impl<T: FileIO> SStStorage<T> {
     }
 
     fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>>
-    where 
+    where
         T: std::io::Read,
-     {
+    {
         // Seek to the beginning of the active database file to read all entries.
         let mut current_offset = self.file.seek_from(SeekFrom::Start(0))?;
         let file_size = self.file.seek_from(SeekFrom::End(0))?;
@@ -143,7 +150,11 @@ impl<T: FileIO> SStStorage<T> {
                         // This is a regular entry. Insert or update the index.
                         self.index.insert(
                             kv.key,
-                            (record_start_offset, record_len, false, kv.timestamp),
+                            IndexEntry {
+                                offset: record_start_offset,
+                                length: record_len,
+                                timestamp: kv.timestamp,
+                            },
                         );
                     }
                     current_offset += record_len;
@@ -170,8 +181,8 @@ impl<T: FileIO> SStStorage<T> {
         print!("Performing the clean up process....");
         let current_time = chrono::Utc::now().timestamp();
         self.index
-            .retain(|_, (_, _, _, timestamp)| match timestamp {
-                Some(ts) => *ts > current_time as u64,
+            .retain(|_, index_entry| match index_entry.timestamp {
+                Some(ts) => ts > current_time as u64,
                 None => true,
             });
         print!("Ended the clean up process....");
@@ -187,14 +198,18 @@ impl<T: FileIO> SStStorage<T> {
         }
 
         // Collect the keys and timestamps into a temporary vector to avoid borrow checker errors.
-        let items_to_list: Vec<_> = self.index.iter().map(|(key, &(_, _, _, ts))| (key.clone(), ts)).collect();
+        let items_to_list: Vec<_> = self
+            .index
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.timestamp))
+            .collect();
 
         println!("---------------------------");
         // Iterate over the independent vector.
         for (key, timestamp_opt) in items_to_list {
             // Get the value for the key.
             let value = self.read(&key)?.unwrap_or_default();
-            
+
             // --- THIS IS THE CORRECTED LOGIC ---
             let formatted_timestamp = if let Some(ts) = timestamp_opt {
                 print!("Raw date is {}", ts);
@@ -222,26 +237,29 @@ impl<T: FileIO> SStStorage<T> {
     }
 
     // Test serialization roundtrip
-    fn test_timestamp_serialization(&self, timestamp: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+    fn test_timestamp_serialization(
+        &self,
+        timestamp: Option<u64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         println!("=== TIMESTAMP SERIALIZATION TEST ===");
         println!("Input timestamp: {:?}", timestamp);
-        
+
         let test_key = b"test_key";
         let test_value = b"test_value";
-        
+
         // Create KeyValue
         let kv = KeyValue::new(test_key, test_value, timestamp, false, 0);
         println!("KeyValue timestamp after creation: {:?}", kv.timestamp);
-        
+
         // Serialize to buffer
         let buffer = kv.to_buffer();
         println!("Buffer created, length: {}", buffer.len());
-        
+
         // Deserialize from buffer
         match parse_key_value_from_buffer(&buffer) {
             Ok(parsed_kv) => {
                 println!("Parsed KeyValue timestamp: {:?}", parsed_kv.timestamp);
-                
+
                 if kv.timestamp == parsed_kv.timestamp {
                     println!("✅ Serialization roundtrip SUCCESS");
                 } else {
@@ -257,7 +275,6 @@ impl<T: FileIO> SStStorage<T> {
         println!("=== END TEST ===\n");
         Ok(())
     }
-
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -335,7 +352,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = &sst_storage.update(
                     key.trim().as_bytes(),
                     new_value.trim().as_bytes(),
-                    false,
                     Some(generate_timestamp_one_hour_in_future()),
                 );
             }
@@ -425,18 +441,18 @@ fn open_file_read_write(path: &str) -> Result<File, Error> {
 // Add this to your main function to test
 fn test_timestamp_issue() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing timestamp serialization...");
-    
+
     // Test with the problematic timestamp
     let test_timestamp = Some(1749763021u64);
-    
+
     let file = std::fs::File::create("test_timestamp.db")?;
     let storage = SStStorage::new(file);
-    
+
     storage.test_timestamp_serialization(test_timestamp)?;
-    
+
     // Clean up
     std::fs::remove_file("test_timestamp.db").ok();
-    
+
     Ok(())
 }
 
@@ -488,11 +504,14 @@ fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("❌ TEST FAILED: The program loaded the corrupted data without error.");
         }
         Err(e) => {
-            if e.to_string().contains("Checksum mismatch") || e.to_string().contains("invalid data") {
+            if e.to_string().contains("Checksum mismatch") || e.to_string().contains("invalid data")
+            {
                 println!("✅ TEST PASSED: The program correctly detected data corruption!");
                 println!("   Error message was: '{}'", e);
             } else {
-                eprintln!("❌ TEST FAILED: The program failed, but not with the expected checksum error.");
+                eprintln!(
+                    "❌ TEST FAILED: The program failed, but not with the expected checksum error."
+                );
                 eprintln!("   Error message was: '{}'", e);
             }
         }

@@ -12,7 +12,7 @@ mod tests {
         // Clean up any existing file from previous test runs
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         let key = b"some_key".to_vec();
         let value = b"some_value".to_vec();
@@ -37,7 +37,7 @@ mod tests {
         let temp_file_path = "temp_test_file_insert_and_delete.txt";
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         let key = b"my_key".to_vec();
         let value = b"my_value".to_vec();
@@ -59,7 +59,7 @@ mod tests {
         let temp_file_path = "temp_test_file_insert_delete_non_existing.txt";
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         let key = b"my_key".to_vec();
         let value = b"my_value".to_vec();
@@ -82,7 +82,7 @@ mod tests {
         let temp_file_path = "temp_test_file_update_key.txt";
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         // Insert a known kv pair to the file
         let key = b"my_key".to_vec();
@@ -111,7 +111,7 @@ mod tests {
         let temp_file_path = "temp_test_file_delete_existing.txt";
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         // Insert a known kv pair to the file
         let key = b"my_key".to_vec();
@@ -146,7 +146,7 @@ mod tests {
         let temp_file_path = "temp_test_file_delete_non_existing.txt";
         let _ = fs::remove_file(temp_file_path);
         let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, std::path::PathBuf::from(temp_file_path));
 
         // Try to delete a key that was never inserted
         let non_existent_key = b"ghost_key".to_vec();

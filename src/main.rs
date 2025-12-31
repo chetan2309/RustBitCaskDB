@@ -3,6 +3,8 @@ use dance_of_bytes::{self, KeyValue};
 use rand::Rng;
 use rust_bit_cask_db::parse_key_value_from_buffer;
 use rust_bit_cask_db::parse_key_value_from_reader;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -12,41 +14,26 @@ use std::{
 mod main_test;
 
 struct IndexEntry {
+    file_id: u32,
     offset: u64,
     length: u64,
     timestamp: Option<u64>,
 }
 
-struct SStStorage<T: FileIO> {
+struct SStStorage<T: Read + Write + Seek> {
     index: BTreeMap<Vec<u8>, IndexEntry>,
     file: T,
+    file_paths: HashMap<u32, PathBuf>
 }
 
-trait FileIO {
-    fn write(&mut self, buf: &[u8]) -> io::Result<()>;
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<()>;
-    fn seek_from(&mut self, pos: SeekFrom) -> io::Result<u64>;
-}
-
-impl FileIO for File {
-    fn write(&mut self, buf: &[u8]) -> io::Result<()> {
-        File::write_all(self, buf)
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        File::read_exact(self, buf)
-    }
-
-    fn seek_from(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        File::seek(self, pos)
-    }
-}
-
-impl<T: FileIO> SStStorage<T> {
-    fn new(file: T) -> Self {
+impl<T: Read + Write + Seek> SStStorage<T> {
+    fn new(file: T, file_id: u32, path: PathBuf) -> Self {
+        let mut file_paths = HashMap::new();
+        file_paths.insert(file_id, path);
         SStStorage {
             index: BTreeMap::new(),
             file,
+            file_paths,
         }
     }
 
@@ -64,7 +51,7 @@ impl<T: FileIO> SStStorage<T> {
         let kv = KeyValue::new(key, value, timestamp, mark_as_deleted, 0);
 
         let buffer = kv.to_buffer();
-        let offset = self.file.seek_from(SeekFrom::End(0))?;
+        let offset = self.file.seek(SeekFrom::End(0))?;
         let length = buffer.len() as u64;
         self.file.write(&buffer)?;
         // Only update the in-memory index for new or updated keys, not for deletions.
@@ -72,6 +59,7 @@ impl<T: FileIO> SStStorage<T> {
             self.insert_key(
                 key.to_vec(),
                 IndexEntry {
+                    file_id: 0,
                     offset,
                     length,
                     timestamp,
@@ -83,10 +71,13 @@ impl<T: FileIO> SStStorage<T> {
 
     fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         if let Some(index_entry) = self.index.get(key) {
+            println!("{:?}", self.file_paths);
+            let path = self.file_paths.get(&index_entry.file_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "File path not found"))?;
+            let mut file = File::open(path)?;
             let mut buffer = vec![0; index_entry.length as usize];
-            self.file
-                .seek_from(io::SeekFrom::Start(index_entry.offset))?;
-            self.file.read(&mut buffer)?;
+            file.seek(io::SeekFrom::Start(index_entry.offset))?;
+            file.read(&mut buffer)?;
             let kv = parse_key_value_from_buffer(&buffer)?;
             Ok(Some(kv.value))
         } else {
@@ -127,9 +118,9 @@ impl<T: FileIO> SStStorage<T> {
         T: std::io::Read,
     {
         // Seek to the beginning of the active database file to read all entries.
-        let mut current_offset = self.file.seek_from(SeekFrom::Start(0))?;
-        let file_size = self.file.seek_from(SeekFrom::End(0))?;
-        self.file.seek_from(SeekFrom::Start(0))?; // Seek back to start for reading.
+        let mut current_offset = self.file.seek(SeekFrom::Start(0))?;
+        let file_size = self.file.seek(SeekFrom::End(0))?;
+        self.file.seek(SeekFrom::Start(0))?; // Seek back to start for reading.
 
         self.index.clear(); // Rebuilding from scratch.
 
@@ -151,6 +142,7 @@ impl<T: FileIO> SStStorage<T> {
                         self.index.insert(
                             kv.key,
                             IndexEntry {
+                                file_id: 0,
                                 offset: record_start_offset,
                                 length: record_len,
                                 timestamp: kv.timestamp,
@@ -173,7 +165,7 @@ impl<T: FileIO> SStStorage<T> {
 
         // After reading the log, the file cursor must be at the end
         // so that new writes are appended correctly.
-        self.file.seek_from(SeekFrom::End(0))?;
+        self.file.seek(SeekFrom::End(0))?;
         Ok(())
     }
 
@@ -290,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(err) => return Err(err.into()),
     };
-    let mut sst_storage = SStStorage::new(file);
+    let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(name));
     // Load data from filesystem into BTree Map which acts as an in-memory.
     sst_storage.load_db_from_disk()?;
 
@@ -446,7 +438,7 @@ fn test_timestamp_issue() -> Result<(), Box<dyn std::error::Error>> {
     let test_timestamp = Some(1749763021u64);
 
     let file = std::fs::File::create("test_timestamp.db")?;
-    let storage = SStStorage::new(file);
+    let storage = SStStorage::new(file, 0, PathBuf::from("test_timestamp.db"));
 
     storage.test_timestamp_serialization(test_timestamp)?;
 
@@ -469,7 +461,7 @@ fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("Step 1: Writing a known record to '{}'...", test_file_name);
         let file = open_file_read_write(test_file_name)?;
-        let mut sst_storage = SStStorage::new(file);
+        let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name));
         let key = b"integrity_check";
         let value = b"this_data_is_good";
         sst_storage.write(key, value, false, None)?;
@@ -495,7 +487,7 @@ fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
     // --- Step 3 & 4: Attempt to load the corrupted file and observe ---
     println!("Step 3: Attempting to load the corrupted database...");
     let file = open_file_read_write(test_file_name)?;
-    let mut sst_storage = SStStorage::new(file);
+    let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name));
 
     // The load_db_from_disk() function will read all records and verify checksums.
     // This call is EXPECTED to fail.

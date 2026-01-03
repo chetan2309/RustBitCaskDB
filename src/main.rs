@@ -4,6 +4,7 @@ use rand::Rng;
 use rust_bit_cask_db::parse_key_value_from_buffer;
 use rust_bit_cask_db::parse_key_value_from_reader;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::{
     collections::BTreeMap,
@@ -23,18 +24,81 @@ struct IndexEntry {
 struct SStStorage<T: Read + Write + Seek> {
     index: BTreeMap<Vec<u8>, IndexEntry>,
     file: T,
+    active_file_id: u32,
     file_paths: HashMap<u32, PathBuf>
 }
 
-impl<T: Read + Write + Seek> SStStorage<T> {
-    fn new(file: T, file_id: u32, path: PathBuf) -> Self {
+trait Storage: Read + Write + Seek {
+    fn open(path: &str) -> Result<Self, Error> where Self: Sized;
+}
+
+impl Storage for File {
+    fn open(path: &str) -> Result<Self, Error> {
+        open_file_read_write(path)
+    }
+}
+
+impl<T: Storage> SStStorage<T> {
+    fn new(file: T, file_id: u32, path: PathBuf, active_file_id: u32) -> Self {
         let mut file_paths = HashMap::new();
         file_paths.insert(file_id, path);
         SStStorage {
             index: BTreeMap::new(),
             file,
+            active_file_id,
             file_paths,
         }
+    }
+
+    fn open(dir: &Path) -> Result<Self, Error> {
+        let paths =  match list_directory_paths(dir) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error reading directory: {}", e);
+                return Err(e.into());
+            }
+        };
+            
+        let mut file_ids_and_name = paths.iter().filter_map(|item| {
+            let file_ids: u32 = item.file_stem()?.to_str()?.parse().ok()?;
+            Some((file_ids, item.to_str()?.to_string()))       
+        }).collect::<Vec<(u32, String)>>();
+        file_ids_and_name.sort();
+        let (file_id, name) = match file_ids_and_name.last() {
+            Some((id, name)) => (*id, name.clone()),
+            None => (0, format!("{}/0.log", dir.to_str().unwrap_or("bitcask/active"))),
+        };
+
+        let file = T::open(&name)?;
+        let mut file_paths = HashMap::new();
+        for (id, path) in file_ids_and_name {
+            file_paths.insert(id, PathBuf::from(path));
+        }
+
+        // Adding this explicit line to add 0.log when it doesn't exist in the HasMap
+        file_paths.insert(file_id, PathBuf::from(&name));
+        
+        let mut storage = SStStorage {
+            index: BTreeMap::new(),
+            file,
+            active_file_id: file_id,
+            file_paths,
+        };
+        storage.load_db_from_disk()?;
+        Ok(storage)
+    }
+
+    fn rotate_file(&mut self) -> Result<(), Error> {
+        self.file.flush()?;
+        // Logic to rotate the file when max size is reached
+        let updated_active_file_id = self.active_file_id + 1;
+        let new_file_name = format!("bitcask/active/{}.log", updated_active_file_id);
+        let new_file = T::open(&new_file_name)?;
+        self.active_file_id = updated_active_file_id;
+        self.file_paths
+            .insert(updated_active_file_id, PathBuf::from(new_file_name));
+        self.file = new_file;
+        Ok(())
     }
 
     fn insert_key(&mut self, key: Vec<u8>, value: IndexEntry) {
@@ -51,16 +115,25 @@ impl<T: Read + Write + Seek> SStStorage<T> {
         let kv = KeyValue::new(key, value, timestamp, mark_as_deleted, 0);
 
         let buffer = kv.to_buffer();
-        let offset = self.file.seek(SeekFrom::End(0))?;
+        let current_offset = self.file.seek(SeekFrom::End(0))?;
         let length = buffer.len() as u64;
+        
+        const MAX_FILE_SIZE: u64 = 1024 * 1024;
+        if current_offset + length > MAX_FILE_SIZE {
+            // Logic to handle file rotation can be added here.
+            // For simplicity, we will just print a message.
+            println!("Max file size reached. File rotation logic should be implemented.");
+            self.rotate_file()?;
+        }
         self.file.write(&buffer)?;
+        
         // Only update the in-memory index for new or updated keys, not for deletions.
         if !mark_as_deleted {
             self.insert_key(
                 key.to_vec(),
                 IndexEntry {
-                    file_id: 0,
-                    offset,
+                    file_id: self.active_file_id,
+                    offset: current_offset,
                     length,
                     timestamp,
                 },
@@ -113,7 +186,7 @@ impl<T: Read + Write + Seek> SStStorage<T> {
         Ok(())
     }
 
-    fn load_db_from_disk(&mut self) -> Result<(), Box<dyn std::error::Error>>
+    fn load_db_from_disk(&mut self) -> Result<(), io::Error>
     where
         T: std::io::Read,
     {
@@ -142,7 +215,7 @@ impl<T: Read + Write + Seek> SStStorage<T> {
                         self.index.insert(
                             kv.key,
                             IndexEntry {
-                                file_id: 0,
+                                file_id: self.active_file_id,
                                 offset: record_start_offset,
                                 length: record_len,
                                 timestamp: kv.timestamp,
@@ -158,7 +231,7 @@ impl<T: Read + Write + Seek> SStStorage<T> {
                 Err(e) => {
                     // An actual error occurred.
                     eprintln!("Error reading log file during startup: {}", e);
-                    return Err(Box::new(e));
+                    return Err(e);
                 }
             }
         }
@@ -269,22 +342,27 @@ impl<T: Read + Write + Seek> SStStorage<T> {
     }
 }
 
+fn list_directory_paths(path: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut all_paths = Vec::new();
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("log") {
+                // print!("Found log file: {:?}\n", path);
+                all_paths.push(path);
+            }
+        }
+    }
+    all_paths.sort();
+    Ok(all_paths)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Hello, welcome to DB created on BitCask paper!...................");
     fs::create_dir_all("bitcask/active")?;
-    let name = "bitcask/active/database.txt";
-    let file = match open_file_read_write(&name) {
-        Ok(mut file) => {
-            // Print initial offset
-            let initial_offset = file.seek(SeekFrom::End(0))?;
-            println!("Initial offset after opening: {}", initial_offset);
-            file
-        }
-        Err(err) => return Err(err.into()),
-    };
-    let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(name));
-    // Load data from filesystem into BTree Map which acts as an in-memory.
-    sst_storage.load_db_from_disk()?;
+
+    let mut sst_storage: SStStorage<File> = SStStorage::open(Path::new("bitcask/active"))?;
 
     let mut last_cleanup_time = Instant::now();
 
@@ -360,8 +438,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut rng = rand::thread_rng(); // Initialize the random number generator
                 let start_write = Instant::now();
                 let mut total_write_time = Duration::new(0, 0);
-                for _ in 0..1000 {
-                    let key_string = rng.gen_range(1..=1000).to_string().to_string();
+                for _ in 0..50000 {
+                    let key_string = rng.gen_range(1..=50000).to_string().to_string();
                     let key = key_string.as_bytes();
                     let value_string = (3 * key[0] as u64).to_string();
                     let value = value_string.as_bytes();
@@ -438,7 +516,7 @@ fn test_timestamp_issue() -> Result<(), Box<dyn std::error::Error>> {
     let test_timestamp = Some(1749763021u64);
 
     let file = std::fs::File::create("test_timestamp.db")?;
-    let storage = SStStorage::new(file, 0, PathBuf::from("test_timestamp.db"));
+    let storage = SStStorage::new(file, 0, PathBuf::from("test_timestamp.db"), 0);
 
     storage.test_timestamp_serialization(test_timestamp)?;
 
@@ -461,7 +539,7 @@ fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("Step 1: Writing a known record to '{}'...", test_file_name);
         let file = open_file_read_write(test_file_name)?;
-        let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name));
+        let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name), 0);
         let key = b"integrity_check";
         let value = b"this_data_is_good";
         sst_storage.write(key, value, false, None)?;
@@ -487,7 +565,7 @@ fn test_corruption() -> Result<(), Box<dyn std::error::Error>> {
     // --- Step 3 & 4: Attempt to load the corrupted file and observe ---
     println!("Step 3: Attempting to load the corrupted database...");
     let file = open_file_read_write(test_file_name)?;
-    let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name));
+    let mut sst_storage = SStStorage::new(file, 0, PathBuf::from(test_file_name), 0);
 
     // The load_db_from_disk() function will read all records and verify checksums.
     // This call is EXPECTED to fail.

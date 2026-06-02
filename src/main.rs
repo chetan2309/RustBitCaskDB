@@ -25,6 +25,8 @@ struct FileStorage<T: Read + Write + Seek> {
     file_handles: HashMap<u64, T>,
 }
 
+const MAX_LOG_FILE_SIZE: u64 = 1024 * 1 * 1; // 2KB for testing, can be increased to 64MB in production
+
 impl FileStorage<File> {
     fn open(dir: &Path) -> io::Result<Self> {
         let mut file_handles = HashMap::new();
@@ -50,6 +52,14 @@ impl FileStorage<File> {
             active_file_id: active_file_id,
             file_handles,
         })
+    }
+
+    fn rotate_log_file(&mut self, dir: &Path) -> io::Result<()> {
+        self.active_file_id += 1;
+        let path = dir.join(format!("{}.log", self.active_file_id));
+        let file = open_file_read_write(&path)?;
+        self.file_handles.insert(self.active_file_id, file);
+        Ok(())
     }
 }
 
@@ -121,55 +131,61 @@ fn load_db_from_disk<T: Read + Write + Seek>(
             keydir.index.keys()
         );
     }
-    print!("Loaded keys: ");
-    for key in keydir.index.keys() {
-        print!("{} ", String::from_utf8_lossy(key));
-    }
-    println!();
     Ok(())
 }
 
-fn write_to_file<T: Read + Write + Seek>(
+fn write_to_file(
     key: &[u8],
     value: &[u8],
     mark_as_deleted: bool,
     timestamp: Option<u64>,
     keydir: &mut KeyDir,
-    storage: &mut FileStorage<T>,
+    storage: &mut FileStorage<File>,
 ) -> Result<(), Error> {
     let kv = KeyValue::new(key, value, timestamp, mark_as_deleted, 0);
     let buffer = kv.to_buffer();
     let length = buffer.len() as u64;
-    if let Some(file_handle) = storage.file_handles.get_mut(&storage.active_file_id) {
-        let offset = file_handle.seek(SeekFrom::End(0))?;
-        file_handle.write_all(&buffer)?;
-        if !mark_as_deleted {
-            keydir.index.insert(
-                key.to_vec(),
-                IndexEntry {
-                    file_id: storage.active_file_id,
-                    offset,
-                    length,
-                    timestamp,
-                },
-            );
-        }
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Active file handle not found",
-        ))
+
+    let current_size = {
+        let file = storage.file_handles.get_mut(&storage.active_file_id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "Active file handle not found")
+        })?;
+        file.seek(SeekFrom::End(0))?
+    };
+
+    print!("Rotating log file. Current size: {}, New record size: {}, Max size: {}. ",
+            current_size, length, MAX_LOG_FILE_SIZE);
+    if current_size > 0 && current_size + length > MAX_LOG_FILE_SIZE {
+        storage.rotate_log_file(Path::new("bitcask/active"))?;
     }
+
+    let file_id = storage.active_file_id;
+    let file = storage.file_handles.get_mut(&file_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "Active file handle not found")
+    })?;
+    let offset = file.seek(SeekFrom::End(0))?;
+    file.write_all(&buffer)?;
+    if !mark_as_deleted {
+        keydir.index.insert(
+            key.to_vec(),
+            IndexEntry {
+                file_id,
+                offset,
+                length,
+                timestamp,
+            },
+        );
+    }
+    Ok(())
 }
 
-fn update_key_value<T: Read + Write + Seek>(
+fn update_key_value(
     key: &[u8],
     new_value: &[u8],
     mark_as_deleted: bool,
     timestamp: Option<u64>,
     keydir: &mut KeyDir,
-    storage: &mut FileStorage<T>,
+    storage: &mut FileStorage<File>,
 ) -> Result<(), Error> {
     // Update the key in the key directory by utilizing existing
     // write_to_file function. We also have to update index with updated value
@@ -177,10 +193,10 @@ fn update_key_value<T: Read + Write + Seek>(
     Ok(())
 }
 
-fn delete_key<T: Read + Write + Seek>(
+fn delete_key(
     key: &[u8],
     keydir: &mut KeyDir,
-    storage: &mut FileStorage<T>,
+    storage: &mut FileStorage<File>,
 ) -> Result<(), Error> {
     // First, check if the key exists in the live index.
     // If it does, we will write a tombstone record to the log and remove it from the index.

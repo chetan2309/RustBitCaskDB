@@ -44,7 +44,7 @@ pub fn parse_key_value_from_buffer(buffer: &[u8]) -> io::Result<KeyValue> {
         value,
         timestamp,
         tombstone,
-        checksum: checksum_from_file
+        checksum: checksum_from_file,
     };
     // Calculate the checksum
     let calculated_checksum = kv.calculate_checksum();
@@ -54,7 +54,10 @@ pub fn parse_key_value_from_buffer(buffer: &[u8]) -> io::Result<KeyValue> {
             "Checksum mismatch",
         ));
     }
-    println!("Calculated checksum {} checksum_from_file {}", calculated_checksum, checksum_from_file);
+    println!(
+        "Calculated checksum {} checksum_from_file {}",
+        calculated_checksum, checksum_from_file
+    );
     kv.checksum = calculated_checksum;
     Ok(kv)
 }
@@ -98,7 +101,7 @@ pub fn parse_key_value_from_reader<R: Read>(reader: &mut R) -> io::Result<KeyVal
         value,
         timestamp,
         tombstone,
-        checksum: checksum_from_file
+        checksum: checksum_from_file,
     };
     // Calculate the checksum
     let calculated_checksum = kv.calculate_checksum();

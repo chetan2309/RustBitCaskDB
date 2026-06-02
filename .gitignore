@@ -1,1 +1,7 @@
 /target
+bitcask/active/0.log
+bitcask/active/1.log
+src/.claude/settings.local.json
+Cargo.lock
+__azurite_db_table__.json
+Cargo.lock

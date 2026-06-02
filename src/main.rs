@@ -224,10 +224,7 @@ fn delete_key(
             "Key not found for deletion: {:?}",
             String::from_utf8_lossy(key)
         );
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Key Not Found in the index",
-        ))
+        Ok(())
     }
 }
 

@@ -5,7 +5,6 @@ use rust_bit_cask_db::parse_key_value_from_reader;
 use std::path::Path;
 use std::path::PathBuf;
 use std::{
-    collections::BTreeMap,
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Error, Read, Seek, SeekFrom, Write},
@@ -23,6 +22,7 @@ struct IndexEntry {
 struct FileStorage<T: Read + Write + Seek> {
     active_file_id: u64,
     file_handles: HashMap<u64, T>,
+    dir_path: PathBuf,
 }
 
 const MAX_LOG_FILE_SIZE: u64 = 1024 * 1 * 1; // 2KB for testing, can be increased to 64MB in production
@@ -51,12 +51,13 @@ impl FileStorage<File> {
         Ok(FileStorage {
             active_file_id: active_file_id,
             file_handles,
+            dir_path: dir.to_path_buf(),
         })
     }
 
-    fn rotate_log_file(&mut self, dir: &Path) -> io::Result<()> {
+    fn rotate_log_file(&mut self) -> io::Result<()> {
         self.active_file_id += 1;
-        let path = dir.join(format!("{}.log", self.active_file_id));
+        let path = self.dir_path.join(format!("{}.log", self.active_file_id));
         let file = open_file_read_write(&path)?;
         self.file_handles.insert(self.active_file_id, file);
         Ok(())
@@ -93,19 +94,38 @@ fn load_db_from_disk<T: Read + Write + Seek>(
 ) -> Result<(), Error> {
     // Load the key directory and file storage from disk
     println!("Loading database from disk...");
-    for (file_id, file_handle) in &mut storage.file_handles.iter_mut() {
-        let mut current_offset = 0;
+    let mut file_ids: Vec<u64> = storage.file_handles.keys().copied().collect();
+    file_ids.sort();
+
+    for file_id in file_ids {
+        println!("Found log file with ID: {}", file_id);
+        let file_handle = storage.file_handles.get_mut(&file_id).unwrap();
+        let mut current_offset: u64 = 0;
         loop {
+            let before = match file_handle.stream_position() {
+                Ok(pos) => pos,
+                Err(e) => {
+                    eprintln!("Error getting stream position before reading: {}", e);
+                    return Err(e);
+                }
+            };
             match parse_key_value_from_reader(file_handle) {
                 Ok(keyvalue) => {
-                    let record_len = keyvalue.to_buffer().len() as u64;
+                    let after = match file_handle.stream_position() {
+                        Ok(pos) => pos,
+                        Err(e) => {
+                            eprintln!("Error getting stream position after reading: {}", e);
+                            return Err(e);
+                        }
+                    };
+                    let record_len = after - before;
                     if keyvalue.tombstone {
                         keydir.index.remove(&keyvalue.key);
                     } else {
                         keydir.index.insert(
                             keyvalue.key,
                             IndexEntry {
-                                file_id: *file_id,
+                                file_id: file_id,
                                 offset: current_offset,
                                 length: record_len,
                                 timestamp: keyvalue.timestamp,
@@ -125,11 +145,6 @@ fn load_db_from_disk<T: Read + Write + Seek>(
                 }
             }
         }
-        println!(
-            "Loaded keys from file {}: {:?}",
-            file_id,
-            keydir.index.keys()
-        );
     }
     Ok(())
 }
@@ -156,7 +171,7 @@ fn write_to_file(
     print!("Rotating log file. Current size: {}, New record size: {}, Max size: {}. ",
             current_size, length, MAX_LOG_FILE_SIZE);
     if current_size > 0 && current_size + length > MAX_LOG_FILE_SIZE {
-        storage.rotate_log_file(Path::new("bitcask/active"))?;
+        storage.rotate_log_file()?;
     }
 
     let file_id = storage.active_file_id;
@@ -243,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for key in key_dir.index.keys() {
         println!("Loaded key: {}", String::from_utf8_lossy(key));
     }
+
     let mut last_cleanup_time = Instant::now();
     println!("Completed the loading of index into memory.....");
     loop {

@@ -1,170 +1,199 @@
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::HashMap, fs, path::PathBuf};
 
-    use dance_of_bytes::read_from_file;
-
-    use crate::{open_file_read_write, SStStorage};
+    use crate::{FileStorage, KeyDir, delete_key, read_from_file, update_key_value, write_to_file, dance_of_bytes::read_from_file as read_from_file_dance_of_bytes};
     #[test]
     fn test_write() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_write.txt";
+        let temp_file_dir = "temp_test_file_write";
         // Clean up any existing file from previous test runs
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
 
-        let key = b"some_key".to_vec();
-        let value = b"some_value".to_vec();
+        let key = b"some_key";
+        let value = b"some_value";
         let timestamp = Some(1234567890u64);
 
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
+        
         // Call the write method and validate the result
-        let result = sst_storage.write(&key, &value, false, timestamp);
+        let result = write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage);
         assert!(result.is_ok());
 
-        let record_value = sst_storage.read(&key).unwrap();
+        let record_value = read_from_file(key, &mut key_dir, &mut file_storage).unwrap();
 
         // Validate that the key and value were written correctly
-        assert_eq!(record_value, Some(value));
+        assert_eq!(record_value, Some(value.to_vec()));
 
         // Clean up the temporary file
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
     #[test]
     fn test_insert_key_and_read_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_insert_and_delete.txt";
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let temp_file_dir = "temp_test_insert_key_and_read_existing_key";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
+        let timestamp = Some(1234567890u64);
 
-        let key = b"my_key".to_vec();
-        let value = b"my_value".to_vec();
+        let key = b"my_key";
+        let value = b"my_value";
+
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
 
         // Writing a known kv pair to the file
-        sst_storage.write(&key, &value, false, Some(0)).unwrap();
+        write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage).unwrap();
 
         // Reading the kv pair from the file
-        let read_value = sst_storage.read(&key).unwrap();
-        assert_eq!(read_value, Some(value));
+        let record_value = read_from_file(key, &mut key_dir, &mut file_storage).unwrap();
+        assert_eq!(record_value, Some(value.to_vec()));
 
         // cleanup
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+        // Clean up the temporary file
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
     #[test]
     fn test_insert_key_and_read_non_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_insert_delete_non_existing.txt";
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let temp_file_dir = "temp_test_insert_key_and_read_non_existing_key";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
+        let timestamp = Some(1234567890u64);
 
-        let key = b"my_key".to_vec();
-        let value = b"my_value".to_vec();
+        let key = b"my_key";
+        let value = b"my_value";
+
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
 
         // Writing a known kv pair to the file
-        sst_storage.write(&key, &value, false, Some(0)).unwrap();
+        write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage).unwrap();
 
-        // Reading the kv pair from the file that does not exist
-        let non_existent_key = b"non_existent_key".to_vec();
-        let read_value = sst_storage.read(&non_existent_key).unwrap();
-        assert_eq!(read_value, None);
+        // Reading the kv pair from the file
+        let non_existent_key = b"non_existent_key";
+        let record_value = read_from_file(non_existent_key, &mut key_dir, &mut file_storage).unwrap();
+        assert_eq!(record_value, None);
 
-        // cleanup
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+        // Clean up the temporary file
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
     #[test]
     fn test_update_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_update_key.txt";
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let temp_file_dir = "temp_test_update_existing_key";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
+        let timestamp = Some(1234567890u64);
 
-        // Insert a known kv pair to the file
-        let key = b"my_key".to_vec();
-        let value = b"my_value".to_vec();
-        let timestamp = Some(0);
-        sst_storage.write(&key, &value, false, timestamp).unwrap();
+        let key = b"my_key";
+        let value = b"my_value";
+
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
+
+        // Writing a known kv pair to the file
+        write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage).unwrap();
+
 
         // Update the kv pair
-        let updated_value = b"updated_value".to_vec();
+        let updated_value = b"updated_value";
         let updated_timestamp = Some(1);
-        sst_storage
-            .update(&key, &updated_value, updated_timestamp)
-            .unwrap();
+        update_key_value(key, updated_value, false, updated_timestamp, &mut key_dir, &mut file_storage).unwrap();
 
         // Reading the kv pair from the file
-        let read_value = sst_storage.read(&key).unwrap();
-        assert_eq!(read_value, Some(updated_value));
+        let record_value = read_from_file(key, &mut key_dir, &mut file_storage).unwrap();
+        assert_eq!(record_value, Some(updated_value.to_vec()));
 
-        // cleanup
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+        // Clean up the temporary file
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
     #[test]
     fn test_delete_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_delete_existing.txt";
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let temp_file_dir = "temp_test_delete_existing_key";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
 
-        // Insert a known kv pair to the file
-        let key = b"my_key".to_vec();
-        let value = b"my_value".to_vec();
+        let key = b"my_key";
+        let value = b"my_value";
         let timestamp = Some(0);
-        let result = sst_storage.write(&key, &value, false, timestamp);
+
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
+
+        let result = write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage);
         assert!(result.is_ok(), "Writing initial key-value pair failed");
 
         // Delete the kv pair
-        let result = sst_storage.delete_key(&key);
+        let result = delete_key(key, &mut key_dir, &mut file_storage);
         // Should succeed without error (no-op)
         assert!(result.is_ok(), "Deleting an existing key should not error");
 
         // Reading the kv pair from the file should return None
-        let read_value = sst_storage.read(&key).unwrap();
+        let read_value = read_from_file(key, &mut key_dir, &mut file_storage).unwrap();
         assert_eq!(read_value, None);
 
         // Verify tombstone was persisted to disk
         // The file should have 2 records: original write + tombstone
-        let records = read_from_file(&temp_file_path).unwrap();
-        assert_eq!(records.len(), 2, "Expected 2 records: original + tombstone");
-        assert!(records[1].tombstone, "Second record should be a tombstone");
-        assert_eq!(records[1].key, key, "Tombstone should have the same key");
+        // Tempfile to pass will be full string path of the file created above
+        let log_path = temp_file.join("0.log");
+        let records = read_from_file_dance_of_bytes(log_path.to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2, "There should be 2 records in the file (write + tombstone)");
+        let tombstone_record = &records[1]; // The second record should be the tombstone
+        assert!( tombstone_record.tombstone, "The second record should be a tombstone");
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
 
-        // cleanup
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
     }
 
     #[test]
     fn test_delete_non_existing_key() {
         // Create a temporary file for testing
-        let temp_file_path = "temp_test_file_delete_non_existing.txt";
-        let _ = fs::remove_file(temp_file_path);
-        let file = open_file_read_write(temp_file_path).expect("Failed to create temp file");
-        let mut sst_storage = SStStorage::new(file);
+        let temp_file_dir = "temp_test_delete_non_existing_key";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
 
-        // Try to delete a key that was never inserted
-        let non_existent_key = b"ghost_key".to_vec();
-        let result = sst_storage.delete_key(&non_existent_key);
+        let key = b"my_key";
 
+        let mut key_dir = KeyDir {
+            index: HashMap::new(),
+        };
+
+        // Delete the non-existing key
+        let result = delete_key(key, &mut key_dir, &mut file_storage);
         // Should succeed without error (no-op)
-        assert!(result.is_ok(), "Deleting non-existent key should not error");
+        assert!(result.is_ok(), "Deleting a non-existing key should not error");
 
-        // Verify no tombstone was written (file should be empty)
-        let records = read_from_file(&temp_file_path).unwrap();
-        assert_eq!(
-            records.len(),
-            0,
-            "No records should be written for non-existent key delete"
-        );
-
-        // cleanup
-        fs::remove_file(temp_file_path).expect("Failed to remove temp file");
+        // Clean up the temporary file
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
 }

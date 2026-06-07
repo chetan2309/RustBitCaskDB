@@ -56,12 +56,70 @@ impl FileStorage<File> {
     }
 
     fn rotate_log_file(&mut self) -> io::Result<()> {
-        self.active_file_id += 1;
+        self.active_file_id = self.next_file_id();
         let path = self.dir_path.join(format!("{}.log", self.active_file_id));
         let file = open_file_read_write(&path)?;
         self.file_handles.insert(self.active_file_id, file);
         Ok(())
     }
+
+    
+    fn merge(&mut self, index: &HashMap<Vec<u8>, IndexEntry>) 
+    -> Result<Vec<(Vec<u8>, IndexEntry)>, Error> {
+        let mut index_updates: Vec<(Vec<u8>, IndexEntry)> = Vec::new();
+        let closed_file_ids: Vec<u64> = self.file_handles.keys().copied().filter(|id| *id != self.active_file_id).collect();
+        println!("Closed file ids: {:?}", closed_file_ids);
+
+        // Opening a new file for merge process to write these older files keys.
+        let merge_file_id = self.next_file_id();
+        let path = self.dir_path.join(format!("{}.log", merge_file_id));
+        let file = open_file_read_write(&path)?;
+        self.file_handles.insert(merge_file_id, file);
+
+        let mut records: Vec<(Vec<u8>, Vec<u8>, Option<u64>)> = Vec::new();
+
+        for (key, entry) in index {
+            // Key is &Vec<u8> , entry is &IndexEntry
+            if !closed_file_ids.contains(&entry.file_id) {
+                continue;
+            }
+            let file_handle =  self.file_handles.get_mut(&entry.file_id).unwrap();
+            let mut buffer = vec![0; entry.length as usize];
+            file_handle.seek(io::SeekFrom::Start(entry.offset))?;
+            file_handle.read_exact(&mut buffer)?;
+            records.push((key.clone(), buffer, entry.timestamp));
+        }
+
+        let merge_file_handle =  self.file_handles.get_mut(&merge_file_id).unwrap();
+        for (key, buffer, timestamp) in &records {
+            let current_offset = match merge_file_handle.stream_position() {
+                Ok(pos) => pos,
+                Err(e) => {
+                    eprintln!("Error getting stream position before reading: {}", e);
+                    return Err(e);
+                }
+            };
+            merge_file_handle.write_all(buffer)?;
+            index_updates.push((key.to_vec(),
+                IndexEntry {
+                    file_id: merge_file_id,
+                    offset: current_offset,
+                    length: buffer.len() as u64,
+                    timestamp: *timestamp,
+                }),
+            );
+        }
+        Ok(index_updates)
+    }
+
+    fn next_file_id(&self) -> u64 {
+        let max_id = match self.file_handles.keys().max() {
+            Some(id) => id + 1,
+            None => 0,
+        };
+        max_id
+    }
+
 }
 
 struct KeyDir {
@@ -302,14 +360,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Read key!");
                 let mut key = String::new();
                 let _ = io::stdin().read_line(&mut key);
-                if let Some(value) =
-                    read_from_file(key.trim().as_bytes(), &key_dir, &mut file_storage)?
-                {
+                let key_bytes = key.trim().as_bytes();
+                if let Some(entry) = key_dir.index.get(key_bytes) {
+                    println!("Reading from file_id: {}, offset: {}", entry.file_id, entry.offset);
+                }
+                if let Some(value) = read_from_file(key_bytes, &key_dir, &mut file_storage)? {
                     println!("Value: {:?}", String::from_utf8_lossy(&value));
                 } else {
                     println!(
                         "Key not found: {:?}",
-                        String::from_utf8_lossy(key.trim().as_bytes())
+                        String::from_utf8_lossy(key_bytes)
                     );
                 }
             }
@@ -337,6 +397,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Remove the newline character from the input
                 let key = key.trim();
                 delete_key(key.as_bytes(), &mut key_dir, &mut file_storage)?;
+            }
+            5 => {
+                let updates = file_storage.merge(&key_dir.index)?;
+                println!("Merge completed. Updated {} keys:", updates.len());
+                for (key, entry) in &updates {
+                    println!("  Key: {:?} -> file_id: {}, offset: {}", 
+                        String::from_utf8_lossy(key), entry.file_id, entry.offset);
+                }
+                // Apply updates to key_dir
+                for (key, entry) in updates {
+                    key_dir.index.insert(key, entry);
+                }
             }
             /*
             5 => {
@@ -393,7 +465,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             9 => {
                 let _ = test_corruption();
             }*/
-            4_u32..=u32::MAX => todo!(),
+            5_u32..=u32::MAX => todo!(),
         }
     }
     Ok(())

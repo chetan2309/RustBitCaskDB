@@ -17,6 +17,7 @@ struct IndexEntry {
     offset: u64,
     length: u64,
     timestamp: Option<u64>,
+    tombstone: bool
 }
 
 struct FileStorage<T: Read + Write + Seek> {
@@ -25,7 +26,7 @@ struct FileStorage<T: Read + Write + Seek> {
     dir_path: PathBuf,
 }
 
-const MAX_LOG_FILE_SIZE: u64 = 1024 * 1 * 1; // 2KB for testing, can be increased to 64MB in production
+const MAX_LOG_FILE_SIZE: u64 = 128 * 1 * 1; // 2KB for testing, can be increased to 64MB in production
 
 impl FileStorage<File> {
     fn open(dir: &Path) -> io::Result<Self> {
@@ -106,6 +107,7 @@ impl FileStorage<File> {
                     offset: current_offset,
                     length: buffer.len() as u64,
                     timestamp: *timestamp,
+                    tombstone: false
                 }),
             );
         }
@@ -177,16 +179,19 @@ fn load_db_from_disk<T: Read + Write + Seek>(
                         }
                     };
                     let record_len = after - before;
-                    if keyvalue.tombstone {
-                        keydir.index.remove(&keyvalue.key);
-                    } else {
+                    let should_insert =  match keydir.index.get(&keyvalue.key) {
+                        None => true,
+                        Some(existing) => keyvalue.timestamp > existing.timestamp
+                    };
+                    if should_insert {
                         keydir.index.insert(
                             keyvalue.key,
                             IndexEntry {
-                                file_id: file_id,
+                                file_id,
                                 offset: current_offset,
                                 length: record_len,
                                 timestamp: keyvalue.timestamp,
+                                tombstone: keyvalue.tombstone
                             },
                         );
                     }
@@ -204,6 +209,7 @@ fn load_db_from_disk<T: Read + Write + Seek>(
             }
         }
     }
+    keydir.index.retain(|_key, entry| !entry.tombstone);
     Ok(())
 }
 
@@ -246,6 +252,7 @@ fn write_to_file(
                 offset,
                 length,
                 timestamp,
+                tombstone: mark_as_deleted
             },
         );
     }

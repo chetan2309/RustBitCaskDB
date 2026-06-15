@@ -281,7 +281,7 @@ fn delete_key(
     // First, check if the key exists in the live index.
     // If it does, we will write a tombstone record to the log and remove it from the index.
     if keydir.index.contains_key(key) {
-        write_to_file(key, &[], true, Some(0), keydir, storage)?;
+        write_to_file(key, &[], true, Some(Utc::now().timestamp() as u64), keydir, storage)?;
         keydir.index.remove(key);
         Ok(())
     } else {
@@ -358,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key.trim().as_bytes(),
                     value.trim().as_bytes(),
                     false,
-                    Some(generate_timestamp_one_hour_in_future()),
+                    Some(Utc::now().timestamp() as u64),
                     &mut key_dir,
                     &mut file_storage,
                 )?;
@@ -391,7 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key.trim().as_bytes(),
                     value.trim().as_bytes(),
                     false,
-                    Some(generate_timestamp_one_hour_in_future()),
+                    Some(Utc::now().timestamp() as u64),
                     &mut key_dir,
                     &mut file_storage,
                 )?;

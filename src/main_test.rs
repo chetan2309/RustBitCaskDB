@@ -2,7 +2,7 @@
 mod tests {
     use std::{collections::HashMap, fs, path::PathBuf};
 
-    use crate::{FileStorage, KeyDir, delete_key, read_from_file, update_key_value, write_to_file, dance_of_bytes::read_from_file as read_from_file_dance_of_bytes};
+    use crate::{FileStorage, KeyDir, dance_of_bytes::read_from_file as read_from_file_dance_of_bytes, delete_key, load_db_from_disk, read_from_file, update_key_value, write_to_file};
     #[test]
     fn test_write() {
         // Create a temporary file for testing
@@ -193,6 +193,90 @@ mod tests {
         assert!(result.is_ok(), "Deleting a non-existing key should not error");
 
         // Clean up the temporary file
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
+    }
+
+    #[test]
+    fn test_merge_then_restart_keeps_latest_value() {
+        // Create a temporary file for testing
+        let temp_file_dir = "temp_test_merge_then_restart_keeps_latest_value";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+
+        let key = b"my_key";
+        let value = b"old_value";
+        let timestamp = Some(1);
+        
+        // --- session 1: write old value, rotate, merge, then write new value ---
+        {
+            let mut file_storage = FileStorage::open(&temp_file).unwrap();
+            let mut key_dir = KeyDir {
+                index: HashMap::new(),
+            };
+
+            // Writing first value, small timestamp
+            write_to_file(key, value, false, timestamp, &mut key_dir, &mut file_storage).unwrap();
+
+            // close the active file so merge has something to read
+            file_storage.rotate_log_file().unwrap();
+
+            // merge the closed file, apply returned update to the keydir
+            let updates = file_storage.merge(&key_dir.index).unwrap();
+            for (key, entry) in updates {
+                key_dir.index.insert(key, entry);
+            }
+            
+            // newer value, larger timestamp -> goes to the active file
+            write_to_file(key, b"new_value", false, Some(2), &mut key_dir, &mut file_storage).unwrap();
+        }
+        // --- fake restart: fresh keydir + storage, rebuild from disk ---
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
+        let mut key_dir = KeyDir { index: HashMap::new() };
+        load_db_from_disk(&mut key_dir, &mut file_storage).unwrap();
+
+        // --- the value must be the newest one, not the resurrected old one ---
+        let value = read_from_file(key, &key_dir, &mut file_storage).unwrap();
+        assert_eq!(value, Some(b"new_value".to_vec()));
+
+        fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
+        
+    }
+
+    #[test]
+    fn test_tomsbtone_stays_deleted() {
+        // Create a temporary file for testing
+        let temp_file_dir = "temp_test_tombstone_stays_deleted";
+        // Clean up any existing file from previous test runs
+        let _ = fs::remove_dir_all(temp_file_dir);
+        let _ = fs::create_dir(temp_file_dir);
+        let temp_file = PathBuf::from(temp_file_dir);
+
+        let key = b"my_key";
+        
+        // --- session 1: write value, rotate, merge, then delete key ---
+        {
+            let mut file_storage = FileStorage::open(&temp_file).unwrap();
+            let mut key_dir = KeyDir {
+                index: HashMap::new(),
+            };
+
+            // Writing first value, small timestamp
+            write_to_file(key, b"value", false, Some(1), &mut key_dir, &mut file_storage).unwrap();
+
+            // delete the key -> tombstone goes to the active file
+            delete_key(key, &mut key_dir, &mut file_storage).unwrap();
+        }
+        // --- fake restart: fresh keydir + storage, rebuild from disk ---
+        let mut file_storage = FileStorage::open(&temp_file).unwrap();
+        let mut key_dir = KeyDir { index: HashMap::new() };
+        load_db_from_disk(&mut key_dir, &mut file_storage).unwrap();
+
+        // --- the value must be None since the tombstone should stay ---
+        let value = read_from_file(key, &key_dir, &mut file_storage).unwrap();
+        assert_eq!(value, None);
+
         fs::remove_dir_all(temp_file_dir).expect("Failed to remove temp file");
     }
 
